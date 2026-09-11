@@ -1,0 +1,26 @@
+# M3-DSH freqtrade 交易节点镜像
+# 基于官方 stable 镜像, 只叠加本项目配置/策略, 保证与上游完全兼容
+# 官方镜像已自带 pandas/numpy/talib/ccxt/requests, 无需再 pip install
+FROM freqtradeorg/freqtrade:stable
+
+LABEL org.dsh.project="m3dsc" \
+      org.dsh.component="freqtrade" \
+      org.dsh.description="M3-DSH DeepSeek Crypto Top - Binance USD-M 涨幅榜趋势系统"
+
+USER root
+
+# 项目配置与策略(频繁改动, 放在最后一层以复用上游缓存)
+COPY config/ /freqtrade/m3dsc_config/
+COPY freqtrade/user_data/strategies/ /freqtrade/user_data/strategies/
+
+WORKDIR /freqtrade
+# 注意: 官方镜像把 freqtrade 及全部依赖(ccxt/pandas/rapidjson...)装在 ftuser 的
+# user-site 里, root 的 site-packages 只有 pip。因此本镜像必须用 ftuser 运行
+# (compose 里 user: "1000:1000"), 挂载目录需对该 uid 可写(scripts/dshc-init.sh 负责)。
+ENV DSHC_DATA_DIR=/workspace/data \
+    DSHC_ROOT=/workspace \
+    TZ=Asia/Shanghai
+
+# 默认命令由 docker-compose 覆盖
+CMD ["trade", "--config", "/freqtrade/m3dsc_config/config-dryrun.json", \
+     "--strategy", "M3GainersTrend", "--strategy-path", "/freqtrade/user_data/strategies"]

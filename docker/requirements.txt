@@ -1,0 +1,5 @@
+# M3-DSH 采集器 / 看板 Python 依赖 (仅用于 dshc 自研模块, 与 freqtrade 镜像无关)
+# 采集器本身只用标准库; 以下依赖供 dashboard.py 与代理能力使用
+flask>=3.0,<4
+requests>=2.31,<3
+PySocks>=1.7.1

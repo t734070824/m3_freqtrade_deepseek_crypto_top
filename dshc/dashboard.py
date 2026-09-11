@@ -1,0 +1,333 @@
+"""M3-DSH 监控看板 (容器 m3dsc-dashboard).
+
+数据来源:
+  * /workspace/data/m3dsc_market.db        : 采集器时序库 (只读)
+  * /workspace/data/live/watchlist.json    : 当前候选池打分
+  * http://m3dsc-freqtrade-dryrun:8080     : freqtrade REST API (dry-run 账户/持仓)
+
+时间展示: 同时给出「北京时间(UTC+8)」与「UTC」, 避免歧义。
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import sqlite3
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+from flask import Flask, Response, jsonify, request
+
+from .config import SETTINGS
+from .timeutil import CST, UTC, fmt, fmt_both, fmt_cn, ms_to_dt, utc_ms
+
+log = logging.getLogger("dshc.dashboard")
+app = Flask("m3dsc-dashboard")
+
+DATA = SETTINGS.data_dir
+DB = SETTINGS.db_path
+LIVE = DATA / "live"
+
+
+# ------------------------------------------------------------------ 工具
+def db() -> sqlite3.Connection | None:
+    if not DB.exists():
+        return None
+    try:
+        c = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=15,
+                            check_same_thread=False)
+        c.row_factory = sqlite3.Row
+        return c
+    except sqlite3.Error:
+        return None
+
+
+def wl() -> dict[str, Any]:
+    try:
+        return json.loads((LIVE / "watchlist.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _hx(text: str) -> str:
+    return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _ft_api(path: str) -> dict[str, Any] | None:
+    """调用 freqtrade REST API."""
+    import base64
+    import urllib.request
+    url = os.environ.get("DSHC_FT_API_URL", "http://m3dsc-freqtrade-dryrun:8080") + path
+    user = os.environ.get("DSHC_FT_API_USER", "m3dsc")
+    pw = os.environ.get("DSHC_FT_API_PASS", "change_me_m3dsc")
+    token = base64.b64encode(f"{user}:{pw}".encode()).decode()
+    req = urllib.request.Request(url, headers={"Authorization": f"Basic {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=6) as r:  # noqa: S310
+            return json.loads(r.read().decode())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# ------------------------------------------------------------------ 页面
+@app.get("/")
+def index() -> str:
+    payload = wl()
+    now = utc_ms()
+    conn = db()
+    cands = payload.get("candidates", [])
+    rows_html = []
+    for i, c in enumerate(cands[:60], 1):
+        score = c.get("score", 0)
+        cls = "pos" if score > 0 else "neg"
+        ann = c.get("funding_ann", 0) * 100
+        rows_html.append(f"""<tr>
+<td>{i}</td><td><b>{_hx(c.get('symbol',''))}</b></td>
+<td class="{cls}">{score:+.1f}</td>
+<td class="{'up' if c.get('change_24h',0)>0 else 'dn'}">{c.get('change_24h',0):+.2f}%</td>
+<td>{c.get('price',0):,.6g}</td>
+<td>{c.get('quote_vol',0)/1e6:,.0f}M</td>
+<td class="{'dn' if ann>0 else 'up'}">{ann:+.1f}%</td>
+<td>{c.get('oi_chg_1h',0):+.2f}%</td>
+<td>{c.get('ls_ratio',0):.2f}</td>
+<td>{c.get('taker_ratio',1):.2f}</td>
+<td>{c.get('spread_bps',0):.1f}</td>
+<td>{c.get('rank_gain',0)}</td>
+<td>{' '.join(c.get('tags',[]))}</td>
+</tr>""")
+
+    gainers = sorted([c for c in cands if c.get("quote_vol", 0) >= 8e6],
+                     key=lambda x: x.get("change_24h", 0), reverse=True)[:20]
+    g_parts = []
+    for i, g in enumerate(gainers, 1):
+        ann = (g.get("funding_ann") or 0) * 100
+        cls = "dn" if ann > 0 else "up"
+        g_parts.append(
+            f"<tr><td>{i}</td><td><b>{_hx(g.get('symbol',''))}</b></td>"
+            f"<td class='up'>{g.get('change_24h',0):+.2f}%</td>"
+            f"<td>{g.get('quote_vol',0)/1e6:,.0f}M</td>"
+            f"<td class='{cls}'>{ann:+.1f}%</td>"
+            f"<td>{g.get('score',0):+.1f}</td>"
+            f"<td>{' '.join(g.get('tags',[]))}</td></tr>")
+    g_html = "".join(g_parts)
+
+    # 采集健康
+    health = []
+    if conn:
+        for r in conn.execute("SELECT * FROM collector_status ORDER BY collector"):
+            age = (now - (r["last_ok_ms"] or 0)) / 1000
+            ok = age < max(600, (r["rows_last"] or 0) * 0 + 600)
+            health.append(
+                f"<tr><td>{_hx(r['collector'])}</td><td>{r['runs']}</td><td>{r['errors']}</td>"
+                f"<td>{r['rows_last']}</td><td class='{'up' if ok else 'dn'}'>"
+                f"{fmt_both(r['last_ok_ms'] or 0)}</td>"
+                f"<td>{'<span class=err>' + _hx((r['last_error'] or '')[:60]) + '</span>' if r['last_error'] else 'OK'}</td></tr>")
+    h_html = "".join(health)
+
+    macro = payload.get("macro", {})
+    fng = macro.get("fear_greed", "n/a")
+    news = macro.get("news_sentiment", "n/a")
+
+    ft_status = _ft_api("/api/v1/status") or []
+    ft_profit = _ft_api("/api/v1/profit") or {}
+    ft_balance = _ft_api("/api/v1/balance") or {}
+    trade_rows = "".join(
+        f"<tr><td>{_hx(t.get('pair',''))}</td>"
+        f"<td>{'空' if t.get('is_short') else '多'}</td>"
+        f"<td>{t.get('open_date','')}</td>"
+        f"<td>{t.get('amount',0)}</td><td>{t.get('open_rate',0):,.6g}</td>"
+        f"<td>{t.get('current_rate',0):,.6g}</td>"
+        f"<td class='{'up' if (t.get('profit_pct') or 0)>0 else 'dn'}'>"
+        f"{(t.get('profit_pct') or 0):+.2f}%</td>"
+        f"<td>{(t.get('profit_abs') or 0):+.2f}</td>"
+        f"<td>{t.get('leverage',1)}</td><td>{_hx(t.get('enter_tag','') or '')}</td></tr>"
+        for t in (ft_status if isinstance(ft_status, list) else []))
+    prof = ft_profit.get("profit_all_coin", ft_profit.get("profit_closed_coin", 0)) or 0
+    prof_pct = (ft_profit.get("profit_all_percent", 0) or 0) * 100
+    bal = ft_balance.get("total", 0) if isinstance(ft_balance, dict) else 0
+    n_open = len(ft_status) if isinstance(ft_status, list) else 0
+
+    age = (now - payload.get("generated_ms", 0)) / 1000 if payload else -1
+
+    return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="60">
+<title>M3-DSH 看板 · 涨幅榜合约趋势系统</title>
+<style>
+:root {{ color-scheme: dark; }}
+body {{ background:#0d1117; color:#c9d1d9; font-family: -apple-system,"PingFang SC","Microsoft YaHei",monospace; margin:0; padding:16px; }}
+h1 {{ font-size:18px; margin:0 0 4px; color:#58a6ff; }}
+h2 {{ font-size:14px; margin:18px 0 6px; color:#79c0ff; border-left:3px solid #1f6feb; padding-left:8px; }}
+table {{ border-collapse:collapse; width:100%; font-size:12px; }}
+th,td {{ border-bottom:1px solid #21262d; padding:3px 6px; text-align:right; white-space:nowrap; }}
+th {{ color:#8b949e; font-weight:500; text-align:right; position:sticky; top:0; background:#0d1117; }}
+td:nth-child(2), td:last-child {{ text-align:left; }}
+.up {{ color:#3fb950; }} .dn {{ color:#f85149; }}
+.pos {{ color:#3fb950; font-weight:600; }} .neg {{ color:#f85149; font-weight:600; }}
+.cards {{ display:flex; gap:12px; flex-wrap:wrap; margin:10px 0; }}
+.card {{ background:#161b22; border:1px solid #30363d; border-radius:6px; padding:8px 14px; min-width:130px; }}
+.card .k {{ font-size:11px; color:#8b949e; }} .card .v {{ font-size:17px; color:#e6edf3; }}
+.err {{ color:#f85149; font-size:11px; }}
+.tag {{ color:#d29922; font-size:10px; }}
+.note {{ color:#8b949e; font-size:11px; margin-top:10px; line-height:1.6; }}
+</style></head><body>
+<h1>M3-DSH · 涨幅榜合约趋势系统 <span style="color:#8b949e;font-size:12px">(dry-run)</span></h1>
+<div class="note">页面刷新: 每 60 秒 · 候选池生成于 {fmt_cn(payload.get('generated_ms',0)) if payload else 'n/a'}
+&nbsp;|&nbsp; {fmt_both(payload.get('generated_ms',0)) if payload else ''} (距今 {age:.0f}s)</div>
+
+<div class="cards">
+  <div class="card"><div class="k">dry-run 总权益</div><div class="v">{bal:,.2f} USDT</div></div>
+  <div class="card"><div class="k">累计盈亏</div><div class="v {'up' if prof>0 else 'dn'}">{prof:+.2f} ({prof_pct:+.2f}%)</div></div>
+  <div class="card"><div class="k">当前持仓</div><div class="v">{n_open}</div></div>
+  <div class="card"><div class="k">候选池</div><div class="v">{len(cands)}</div></div>
+  <div class="card"><div class="k">可交易合约</div><div class="v">{payload.get('n_tradable','n/a')}</div></div>
+  <div class="card"><div class="k">恐贪指数</div><div class="v">{fng}</div></div>
+  <div class="card"><div class="k">新闻情绪</div><div class="v">{news}</div></div>
+</div>
+
+<h2>当前持仓 (freqtrade dry-run)</h2>
+<table><tr><th>标的</th><th>方向</th><th>开仓时间(UTC)</th><th>数量</th><th>开仓价</th><th>现价</th><th>收益率</th><th>盈亏USDT</th><th>杠杆</th><th>信号</th></tr>
+{trade_rows or '<tr><td colspan=10>暂无持仓</td></tr>'}</table>
+
+<h2>候选池打分 (score&gt;0 利多 / score&lt;0 利空)</h2>
+<table><tr><th>#</th><th>合约</th><th>M3得分</th><th>24h涨幅</th><th>价格</th><th>24h额</th>
+<th>资金费率年化</th><th>OI 1h</th><th>大户多空比</th><th>Taker</th><th>价差bps</th><th>涨幅榜名次</th><th>标签</th></tr>
+{''.join(rows_html) or '<tr><td colspan=13>等待采集器产出数据 ...</td></tr>'}</table>
+
+<h2>涨幅榜 TOP20 (流动性过滤后)</h2>
+<table><tr><th>#</th><th>合约</th><th>24h涨幅</th><th>24h成交额</th><th>资金费率年化</th><th>M3得分</th><th>标签</th></tr>
+{g_html or '<tr><td colspan=7>n/a</td></tr>'}</table>
+
+<h2>采集器健康</h2>
+<table><tr><th>采集器</th><th>运行轮次</th><th>错误</th><th>最近行数</th><th>最近成功(北京时间 / UTC)</th><th>状态</th></tr>
+{h_html or '<tr><td colspan=6>n/a</td></tr>'}</table>
+
+<div class="note">
+时间约定: 本页所有时间均显式标注时区 —— 北京时间(UTC+8) 与 UTC。<br>
+资金费率年化 = 当期费率 × (24/结算周期) × 365, 正数表示多头付给空头(持仓成本), 负数表示空头付给多头(持仓补贴)。<br>
+数据源: Binance USD-M 公共接口 (ticker/24hr, premiumIndex, openInterest, longShortRatio, bookTicker, basis) + alternative.me 恐贪指数 + 公开 RSS 新闻。
+</div>
+</body></html>"""
+
+
+# ------------------------------------------------------------------ API
+@app.get("/api/summary")
+def api_summary() -> Response:
+    p = wl()
+    conn = db()
+    out: dict[str, Any] = {
+        "now_ms": utc_ms(),
+        "now_cst": fmt_cn(utc_ms()),
+        "now_utc": fmt(utc_ms()),
+        "watchlist_age_s": (utc_ms() - p.get("generated_ms", 0)) / 1000 if p else None,
+        "macro": p.get("macro", {}),
+        "n_candidates": len(p.get("candidates", [])),
+    }
+    if conn:
+        try:
+            out["tables"] = {r["name"]: r["c"] for r in conn.execute("""
+                SELECT 'ticker_snap' name, COUNT(*) c FROM ticker_snap
+                UNION ALL SELECT 'perp_mark', COUNT(*) FROM perp_mark
+                UNION ALL SELECT 'oi_now', COUNT(*) FROM oi_now
+                UNION ALL SELECT 'ls_ratio', COUNT(*) FROM ls_ratio
+                UNION ALL SELECT 'funding_hist', COUNT(*) FROM funding_hist
+                UNION ALL SELECT 'book_snap', COUNT(*) FROM book_snap
+                UNION ALL SELECT 'basis_snap', COUNT(*) FROM basis_snap
+                UNION ALL SELECT 'news', COUNT(*) FROM news
+                UNION ALL SELECT 'macro', COUNT(*) FROM macro
+            """)}
+        except sqlite3.Error as exc:
+            out["tables_error"] = str(exc)
+    return jsonify(out)
+
+
+_PAIRLIST_CACHE: dict[str, Any] = {"ms": 0, "doc": None}
+
+
+@app.get("/api/pairlist")
+def api_pairlist() -> Response:
+    """freqtrade RemotePairList 专用端点.
+
+    契约: {"pairs": ["BTC/USDT:USDT", ...], "refresh_period": N}
+    数据来自采集器产出的 watchlist.json(已按 |score| 排序)。
+    60 秒缓存, 避免 freqtrade 高频刷新把本服务打爆。
+    """
+    now = utc_ms()
+    doc = _PAIRLIST_CACHE.get("doc")
+    if doc is None or now - int(_PAIRLIST_CACHE.get("ms", 0)) > 60_000:
+        pairs: list[str] = []
+        try:
+            for c in wl().get("candidates", []):
+                sym = str(c.get("symbol", ""))
+                if sym.endswith("USDT"):
+                    pairs.append(f"{sym[:-4]}/USDT:USDT")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("读取候选池失败: %s", exc)
+        if not pairs:
+            pairs = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
+        doc = {"pairs": pairs, "refresh_period": 60}
+        _PAIRLIST_CACHE.update({"ms": now, "doc": doc})
+    return Response(json.dumps(doc, ensure_ascii=False), mimetype="application/json")
+
+
+@app.get("/api/watchlist")
+def api_watchlist() -> Response:
+    return jsonify(wl())
+
+
+@app.get("/api/trades")
+def api_trades() -> Response:
+    return jsonify({"status": _ft_api("/api/v1/status") or [],
+                    "profit": _ft_api("/api/v1/profit") or {},
+                    "balance": _ft_api("/api/v1/balance") or {}})
+
+
+@app.get("/api/funding/<symbol>")
+def api_funding(symbol: str) -> Response:
+    conn = db()
+    if not conn:
+        return jsonify({"error": "db missing"}), 503
+    rows = conn.execute("""
+        SELECT ts_ms, funding_rate, mark_price FROM funding_hist
+        WHERE symbol=? ORDER BY ts_ms DESC LIMIT 60
+    """, (symbol.upper(),)).fetchall()
+    return jsonify([{"ts_ms": r["ts_ms"], "utc": fmt_both(r["ts_ms"]),
+                     "funding_rate": r["funding_rate"],
+                     "funding_ann": (r["funding_rate"] or 0) * 3 * 365,
+                     "mark_price": r["mark_price"]} for r in rows])
+
+
+@app.get("/api/gainers")
+def api_gainers() -> Response:
+    conn = db()
+    if not conn:
+        return jsonify([])
+    rows = conn.execute("""
+        SELECT t.symbol, t.price, t.price_change_pct, t.quote_vol, m.last_funding_rate
+        FROM ticker_snap t
+        LEFT JOIN perp_mark m ON m.symbol=t.symbol AND m.ts_ms=t.ts_ms
+        WHERE t.ts_ms=(SELECT MAX(ts_ms) FROM ticker_snap) AND t.quote_vol > 5000000
+        ORDER BY t.price_change_pct DESC LIMIT 100
+    """).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.get("/health")
+def health() -> Response:
+    ok = DB.exists()
+    return jsonify({"status": "ok" if ok else "degraded", "db": str(DB),
+                    "ts": fmt_both(utc_ms())}), (200 if ok else 503)
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    port = int(os.environ.get("DSHC_DASH_PORT_INTERNAL", "8081"))
+    log.info("M3-DSH 看板启动: http://0.0.0.0:%d  (北京时间 %s)", port, fmt_cn(utc_ms()))
+    app.run(host="0.0.0.0", port=port, threaded=True)
+
+
+if __name__ == "__main__":
+    main()

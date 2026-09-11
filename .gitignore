@@ -1,0 +1,33 @@
+# ---- python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# ---- runtime data (large, regenerated) ----
+# 运行时数据全部不入库: 时序库/候选池/日志均由容器自动重建
+data/*
+!data/.gitkeep
+logs/*
+!logs/.gitkeep
+reports/
+
+# ---- secrets ----
+.env
+*.secret
+secrets/
+
+# ---- freqtrade runtime ----
+freqtrade/user_data/data/
+freqtrade/user_data/logs/
+freqtrade/user_data/backtest_results/
+freqtrade/user_data/hyperopt_results/
+*.sqlite
+user_data/
+
+# ---- misc ----
+.DS_Store
+tmp/
+*.pem

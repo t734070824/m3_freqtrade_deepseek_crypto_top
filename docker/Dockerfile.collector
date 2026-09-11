@@ -1,0 +1,26 @@
+# M3-DSH 数据采集器 / 看板 镜像 (python 标准库为主, 体积小、启动快)
+FROM python:3.11-slim
+
+LABEL org.dsh.project="m3dsc" \
+      org.dsh.component="collector"
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    TZ=Asia/Shanghai \
+    DSHC_ROOT=/workspace
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        tzdata ca-certificates curl \
+    && ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && echo "Asia/Shanghai" > /etc/timezone \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
+
+WORKDIR /workspace
+COPY dshc/ /workspace/dshc/
+COPY scripts/ /workspace/scripts/
+
+ENV PYTHONPATH=/workspace
+CMD ["python", "-m", "dshc.collector"]

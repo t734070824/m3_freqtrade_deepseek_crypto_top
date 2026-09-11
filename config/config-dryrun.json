@@ -1,0 +1,157 @@
+{
+  "$schema": "https://schema.freqtrade.io/schema.json",
+  "bot_name": "m3dsc-dryrun",
+  "initial_state": "running",
+  "max_open_trades": 6,
+  "stake_currency": "USDT",
+  "stake_amount": "unlimited",
+  "tradable_balance_ratio": 0.95,
+  "available_capital": 1000,
+  "amend_last_stake_amount": true,
+  "last_stake_amount_min_ratio": 0.2,
+  "fiat_display_currency": "USD",
+  "dry_run": true,
+  "dry_run_wallet": 1000,
+  "cancel_open_orders_on_exit": true,
+  "trading_mode": "futures",
+  "margin_mode": "isolated",
+  "liquidation_buffer": 0.1,
+  "timeframe": "5m",
+  "strategy": "M3GainersTrend",
+  "minimal_roi": {},
+  "stoploss": -0.34,
+  "use_custom_stoploss": true,
+  "position_adjustment_enable": true,
+  "force_entry_enable": false,
+  "entry_pricing": {
+    "price_side": "same",
+    "use_order_book": true,
+    "order_book_top": 1,
+    "price_last_balance": 0,
+    "check_depth_of_market": {
+      "enabled": false,
+      "bids_to_ask_delta": 0.8
+    }
+  },
+  "exit_pricing": {
+    "price_side": "other",
+    "use_order_book": true,
+    "order_book_top": 1,
+    "price_last_balance": 0
+  },
+  "order_types": {
+    "entry": "limit",
+    "exit": "limit",
+    "stoploss": "market",
+    "stoploss_on_exchange": false,
+    "stoploss_price_type": "mark",
+    "emergency_exit": "market",
+    "force_exit": "market",
+    "force_entry": "market"
+  },
+  "order_time_in_force": {
+    "entry": "GTC",
+    "exit": "GTC"
+  },
+  "unfilledtimeout": {
+    "entry": 3,
+    "exit": 5,
+    "unit": "minutes"
+  },
+  "exchange": {
+    "name": "binance",
+    "key": "",
+    "secret": "",
+    "ccxt_config": {
+      "options": {
+        "defaultType": "swap"
+      }
+    },
+    "ccxt_async_config": {
+      "options": {
+        "defaultType": "swap"
+      }
+    },
+    "pair_whitelist": [
+      "BTC/USDT:USDT",
+      "ETH/USDT:USDT",
+      "SOL/USDT:USDT",
+      "BNB/USDT:USDT",
+      "XRP/USDT:USDT",
+      "DOGE/USDT:USDT",
+      "ADA/USDT:USDT",
+      "AVAX/USDT:USDT",
+      "LINK/USDT:USDT",
+      "LTC/USDT:USDT",
+      "TRX/USDT:USDT",
+      "SUI/USDT:USDT"
+    ],
+    "pair_blacklist": [
+      "BUSD/USDT:USDT",
+      "USDC/USDT:USDT",
+      "TUSD/USDT:USDT",
+      "FDUSD/USDT:USDT",
+      "DAI/USDT:USDT",
+      "USDP/USDT:USDT",
+      "EUR/USDT:USDT",
+      "PAXG/USDT:USDT",
+      "USD1/USDT:USDT",
+      "XUSD/USDT:USDT",
+      "BFUSD/USDT:USDT"
+    ]
+  },
+  "pairlists": [
+    {
+      "_comment": "动态涨幅榜候选池: 由 m3dsc-dashboard 的 /api/pairlist 提供(数据源为采集器 watchlist.json)。freqtrade 2026.x 的 pairlists[].method 是枚举白名单校验, 用户无法注册自定义 IPairList, RemotePairList 是官方扩展点; file:/// 会被 freqtrade 当相对路径解析, 故用容器内 HTTP。",
+      "method": "RemotePairList",
+      "mode": "whitelist",
+      "processing_mode": "append",
+      "pairlist_url": "http://m3dsc-dashboard:8081/api/pairlist",
+      "number_assets": 60,
+      "refresh_period": 60,
+      "keep_pairlist_on_failure": true,
+      "read_timeout": 10
+    },
+    {
+      "method": "SpreadFilter",
+      "max_spread_ratio": 0.008,
+      "refresh_period": 30
+    },
+    {
+      "method": "AgeFilter",
+      "min_days_listed": 2,
+      "refresh_period": 3600
+    },
+    {
+      "method": "PriceFilter",
+      "low_price_ratio": 0.3,
+      "min_price": 0
+    }
+  ],
+  "telegram": {
+    "enabled": false,
+    "token": "",
+    "chat_id": ""
+  },
+  "api_server": {
+    "enabled": true,
+    "listen_ip_address": "0.0.0.0",
+    "listen_port": 8080,
+    "enable_openapi": true,
+    "jwt_secret_key": "m3dsc-jwt-secret-overridden-by-env-000000",
+    "ws_token": "m3dsc-ws-token-overridden-by-env",
+    "CORS_origins": [
+      "*"
+    ],
+    "username": "m3dsc",
+    "password": "override-by-env-FREQTRADE__API_SERVER__PASSWORD"
+  },
+  "internals": {
+    "process_throttle_secs": 5,
+    "heartbeat_interval": 60
+  },
+  "dataformat_ohlcv": "feather",
+  "dataformat_trades": "feather",
+  "logfile": "/workspace/logs/freqtrade-dryrun.log",
+  "db_url": "sqlite:////freqtrade/user_data/m3dsc-dryrun.sqlite"
+}

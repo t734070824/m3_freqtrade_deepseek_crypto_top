@@ -1,0 +1,121 @@
+# =====================================================================
+#  M3-DSH DeepSeek Crypto Top  —  容器编排
+#  容器命名统一前缀: m3dsc   (容器名唯一标记, 便于识别归属)
+#
+#  服务:
+#    m3dsc-market-collector : Binance 合约多源数据采集(行情/资金费率/OI/多空比/基差/盘口 + 场外恐贪/新闻)
+#    m3dsc-freqtrade-dryrun : freqtrade dry-run 交易节点 (Binance USDT-M 合约, 涨幅榜动态选币)
+#    m3dsc-dashboard        : 自研监控看板 (候选池/资金费率/采集健康)
+#
+#  时间: 容器内 TZ=Asia/Shanghai(北京时间 UTC+8), 所有落库时间戳为 UTC 毫秒,
+#        展示处会同时给出「北京时间(UTC+8)」与「UTC」标注。
+# =====================================================================
+
+x-env: &common-env
+  TZ: Asia/Shanghai
+  DSHC_ROOT: /workspace
+  DSHC_DATA_DIR: /workspace/data
+  DSHC_LOG_DIR: /workspace/logs
+  DSHC_PROXY: ${DSHC_PROXY:-}
+  DSHC_PREFIX: ${DSHC_PREFIX:-m3dsc}
+
+services:
+
+  # ------------------------------------------------------------------
+  m3dsc-market-collector:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.collector
+    image: m3dsc-collector:0.1.0
+    container_name: m3dsc-market-collector
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      DSHC_ENABLE_FNG: "${DSHC_ENABLE_FNG:-1}"
+      DSHC_ENABLE_NEWS: "${DSHC_ENABLE_NEWS:-1}"
+      DSHC_TOP_N: "${DSHC_TOP_N:-40}"
+    volumes:
+      - ./dshc:/workspace/dshc:ro
+      - ./scripts:/workspace/scripts:ro
+      - ./data:/workspace/data
+      - ./logs:/workspace/logs
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import json,os,sys,time; p=os.environ['DSHC_DATA_DIR']+'/live/collector_status.json'; \
+              d=json.load(open(p)); sys.exit(0 if time.time()*1000-d['generated_ms']<900000 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  # ------------------------------------------------------------------
+  m3dsc-freqtrade-dryrun:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.freqtrade
+    image: m3dsc-freqtrade:0.1.0
+    container_name: m3dsc-freqtrade-dryrun
+    restart: unless-stopped
+    # 官方镜像依赖装在 ftuser(uid 1000) 的 user-site, 必须用该用户运行
+    user: "1000:1000"
+    depends_on:
+      m3dsc-market-collector:
+        condition: service_started
+      m3dsc-dashboard:
+        condition: service_started
+    environment:
+      <<: *common-env
+      # freqtrade 支持 FREQTRADE__<SECTION>__<KEY> 形式的环境变量覆盖配置
+      FREQTRADE__API_SERVER__USERNAME: "${DSHC_FT_API_USER:-m3dsc}"
+      FREQTRADE__API_SERVER__PASSWORD: "${DSHC_FT_API_PASS:-change_me_m3dsc}"
+      FREQTRADE__API_SERVER__JWT_SECRET_KEY: "${DSHC_FT_JWT_SECRET:-m3dsc-jwt}"
+      FREQTRADE__API_SERVER__WS_TOKEN: "${DSHC_FT_WS_TOKEN:-m3dsc-ws}"
+      FREQTRADE__API_SERVER__LISTEN_PORT: "8080"
+      FREQTRADE__EXCHANGE__KEY: "${DSHC_BINANCE_KEY:-}"
+      FREQTRADE__EXCHANGE__SECRET: "${DSHC_BINANCE_SECRET:-}"
+    volumes:
+      - ./config:/freqtrade/m3dsc_config:ro
+      - ./freqtrade/user_data:/freqtrade/user_data
+      - ./data:/workspace/data
+      - ./logs:/workspace/logs
+    ports:
+      - "127.0.0.1:${DSHC_FT_API_PORT:-18081}:8080"
+    command: >
+      trade
+      --config /freqtrade/m3dsc_config/config-dryrun.json
+      --strategy M3GainersTrend
+      --strategy-path /freqtrade/user_data/strategies
+      --logfile /workspace/logs/freqtrade-dryrun.log
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  # ------------------------------------------------------------------
+  m3dsc-dashboard:
+    image: m3dsc-collector:0.1.0
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.collector
+    container_name: m3dsc-dashboard
+    restart: unless-stopped
+    depends_on:
+      - m3dsc-market-collector
+    environment:
+      <<: *common-env
+      DSHC_FT_API_USER: "${DSHC_FT_API_USER:-m3dsc}"
+      DSHC_FT_API_PASS: "${DSHC_FT_API_PASS:-change_me_m3dsc}"
+      DSHC_FT_API_URL: "http://m3dsc-freqtrade-dryrun:8080"
+    volumes:
+      - ./dshc:/workspace/dshc:ro
+      - ./scripts:/workspace/scripts:ro
+      - ./data:/workspace/data
+      - ./logs:/workspace/logs:ro
+    ports:
+      - "127.0.0.1:${DSHC_DASH_PORT:-18082}:8081"
+    command: ["python", "-m", "dshc.dashboard"]
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
