@@ -107,17 +107,8 @@ CREATE TABLE IF NOT EXISTS ls_ratio (
 );
 CREATE INDEX IF NOT EXISTS idx_ls_sym_kind_ts ON ls_ratio(symbol, kind, ts_ms DESC);
 
-CREATE TABLE IF NOT EXISTS univ (
-    ts_ms            INTEGER NOT NULL,
-    symbol           TEXT NOT NULL,
-    rank_gain        INTEGER,
-    price_change_pct REAL,
-    quote_vol        REAL,
-    oi_value         REAL,
-    funding_rate     REAL,
-    tags             TEXT,
-    PRIMARY KEY (ts_ms, symbol)
-);
+-- 说明: 早期设计里还有 univ / watchlist 两张表, 实际从未写入 —— 榜单与打分的
+-- 快照统一由 rank_snap 承担(5 分钟桶), 因此已删除, 避免出现「永远 0 行」的死表。
 
 CREATE TABLE IF NOT EXISTS macro (
     ts_ms     INTEGER NOT NULL,
@@ -193,14 +184,6 @@ CREATE TABLE IF NOT EXISTS rank_snap (
 );
 CREATE INDEX IF NOT EXISTS idx_rank_sym_ts ON rank_snap(symbol, ts_ms DESC);
 
-CREATE TABLE IF NOT EXISTS watchlist (
-    ts_ms    INTEGER NOT NULL,
-    symbol   TEXT NOT NULL,
-    score    REAL,
-    rank     INTEGER,
-    payload  TEXT,
-    PRIMARY KEY (ts_ms, symbol)
-);
 """
 
 

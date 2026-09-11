@@ -89,6 +89,15 @@
 
 `id, ts_ms(发布时间 UTC ms), source, title, url, summary, fetched_ms`
 
+## 10.5 rank_snap — 榜单与打分快照 (5 分钟粒度)
+
+`ts_ms`(5 分钟对齐), `symbol, rank, score, change_24h, funding_ann, oi_chg_1h, ls_ratio, taker_ratio, spread_bps, tags`
+
+**用途**: 分析榜单名次稳定性、以及「打分 vs 未来真实收益」的相关性
+(`scripts/dshc_analyze.py alpha | stability | bench`)。保留 30 天。
+
+> 另: 早期设计中的 `univ` / `watchlist` 两张表从未写入, 已删除 —— 该职责由 `rank_snap` 承担。
+
 ## 11. collector_status — 采集器心跳
 
 `collector, last_ok_ms, last_run_ms, last_error, rows_last, runs, errors`

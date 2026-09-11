@@ -303,6 +303,7 @@ def api_summary() -> Response:
                 UNION ALL SELECT 'basis_snap', COUNT(*) FROM basis_snap
                 UNION ALL SELECT 'news', COUNT(*) FROM news
                 UNION ALL SELECT 'macro', COUNT(*) FROM macro
+                UNION ALL SELECT 'rank_snap', COUNT(*) FROM rank_snap
             """)}
         except sqlite3.Error as exc:
             out["tables_error"] = str(exc)
