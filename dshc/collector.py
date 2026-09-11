@@ -107,13 +107,15 @@ class MarketCollector:
         self.db_path = db_path or self.s.db_path
         self.live_dir = live_dir or (self.s.data_dir / "live")
         self.live_dir.mkdir(parents=True, exist_ok=True)
-        self.api = BinanceFutures(proxy=proxy or self.s.proxy, rps=8.0)
+        self.api = BinanceFutures(proxy=proxy or self.s.proxy, rps=3.0)
         self.parallel = max(1, parallel)
         self.enable_fng = enable_fng
         self.enable_news = enable_news
 
         self.conn: sqlite3.Connection | None = None
         self._lock = threading.Lock()
+        self._ping_lock = threading.Lock()
+        self._next_slot = 0.0
         self._stop = threading.Event()
         self._stats: dict[str, WorkerStat] = {}
         self._symbols_lock = threading.Lock()
@@ -186,9 +188,15 @@ class MarketCollector:
         return seq[:n]
 
     def _pmap(self, fn: Callable[[str], Any], symbols: Sequence[str],
-              *, desc: str = "") -> list[Any]:
-        """并发调用单 symbol 接口, 返回成功结果列表(失败仅记录)."""
+              *, desc: str = "", limit_rps: float = 3.0) -> list[Any]:
+        """并发调用单 symbol 接口, 返回成功结果列表(失败仅记录).
+
+        注意: 币安「每 IP 2400 weight/min」是与同主机其它实例共享的, 因此本采集器
+        主动把并发与速率压到保守水平, 并让 /futures/data/* 单独限速。
+        """
+        import time as _t
         out: list[Any] = []
+        self._throttle(limit_rps)
         errs = 0
         with ThreadPoolExecutor(max_workers=self.parallel) as ex:
             futs = {ex.submit(fn, s): s for s in symbols}
@@ -204,6 +212,17 @@ class MarketCollector:
         if errs:
             log.info("%s: 成功 %d / 失败 %d", desc or "并发采集", len(out), errs)
         return out
+
+    def _throttle(self, rps: float) -> None:
+        """跨线程共享的最小间隔限速(保护同 IP 上的其它实例)."""
+        with self._ping_lock:
+            now = time.monotonic()
+            gap = 1.0 / max(rps, 0.1)
+            wait = self._next_slot - now
+            if wait > 0:
+                time.sleep(min(wait, 5.0))
+                now = time.monotonic()
+            self._next_slot = max(now, self._next_slot) + gap
 
     def _mark_stat(self, st: WorkerStat, rows: int, error: str = "") -> None:
         now = utc_ms()
@@ -659,7 +678,6 @@ class MarketCollector:
             ("book", 120, self.job_book, 10.0),
             ("oi", self.s.interval_oi, self.job_oi, 15.0),
             ("ratio", self.s.interval_ratio, self.job_ratio, 20.0),
-            ("funding_hist", 900, self.job_funding_hist, 25.0),
             ("basis", self.s.interval_klines, self.job_basis, 30.0),
         ]
         if self.enable_fng:

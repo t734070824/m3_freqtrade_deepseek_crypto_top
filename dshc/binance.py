@@ -34,9 +34,10 @@ MAJOR_BASES = {"BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX", "LINK",
 class BinanceFutures:
     def __init__(self, proxy: str = "", base_url: str = FAPI, rps: float = 8.0) -> None:
         self.base = base_url.rstrip("/")
-        self.http = Client(proxy=proxy, timeout=20.0, retries=4)
-        # 桶容量给足, 保证「全市场 ticker(weight=40)」这类大请求也能得到满速配额
         self.limiter = RateLimiter(rps, burst=64)
+        # 桶容量给足, 保证「全市场 ticker(weight=40)」这类大请求也能得到满速配额;
+        # 同时把限速器注入 Client, 让 429 熔断对所有并发线程生效
+        self.http = Client(proxy=proxy, timeout=20.0, retries=4, limiter=self.limiter)
 
     # ------------------------------------------------------------ 元数据
     def exchange_info(self) -> dict[str, Any]:

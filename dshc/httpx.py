@@ -63,11 +63,14 @@ class Client:
     """带重试的 GET 客户端."""
 
     def __init__(self, proxy: str = "", timeout: float = 15.0,
-                 retries: int = 4, backoff: float = 0.8, obey_retry_after: bool = True) -> None:
+                 retries: int = 4, backoff: float = 0.8, obey_retry_after: bool = True,
+                 limiter: "RateLimiter | None" = None) -> None:
         self.timeout = timeout
         self.retries = retries
         self.backoff = backoff
         self.obey_retry_after = obey_retry_after
+        # 由调用方注入共享限速器, 使 429 熔断对并发线程可见
+        self.limiter = limiter
         self._disabled = False
         self._stats: dict[str, int] = {"ok": 0, "err": 0, "retry": 0}
         self.last_headers: dict[str, str] = {}
@@ -95,6 +98,8 @@ class Client:
         if headers:
             hdrs.update(headers)
 
+        if self.limiter is not None:
+            self.limiter.maybe_restore()
         last_exc: Exception | None = None
         for attempt in range(self.retries + 1):
             try:
@@ -125,12 +130,15 @@ class Client:
                         continue
                 # 429/418 -> 遵守 Retry-After
                 if exc.code in (429, 418):
-                    wait = self.backoff * (2 ** attempt)
+                    wait = max(self.backoff * (2 ** attempt), 5.0 if attempt == 0 else 10.0)
                     if self.obey_retry_after:
                         try:
                             wait = max(wait, float(exc.headers.get("Retry-After", 0) or 0))
                         except (TypeError, ValueError):
                             pass
+                    # 熔断: 通知共享限速器整体降速一段时间
+                    if self.limiter is not None:
+                        self.limiter.penalize(120.0, 0.25)
                     self._sleep(wait)
                     continue
                 if 400 <= exc.code < 500:
@@ -162,10 +170,27 @@ class RateLimiter:
     """
 
     def __init__(self, rate_per_sec: float, burst: int | None = None) -> None:
-        self.rate = max(float(rate_per_sec), 0.05)
+        self.base_rate = max(float(rate_per_sec), 0.05)
+        self.rate = self.base_rate
         self.capacity = max(1, int(burst or max(1.0, rate_per_sec)))
         self._tokens = float(self.capacity)
         self._last = time.monotonic()
+        self._penalty_until = 0.0
+
+    def penalize(self, seconds: float, factor: float = 0.25) -> None:
+        """收到 429/418 后的熔断: 降低速率一段时间, 避免继续激怒交易所.
+
+        背景: 币安 IP 限额是「每 IP 2400 weight/min」, 同一台机器上的其它
+        freqtrade 实例也在消耗同一个配额, 所以必须让出余量、主动降速。
+        """
+        now = time.monotonic()
+        self._penalty_until = max(self._penalty_until, now + seconds)
+        self.rate = max(self.base_rate * factor, 0.1)
+
+    def maybe_restore(self) -> None:
+        if self._penalty_until and time.monotonic() > self._penalty_until:
+            self.rate = self.base_rate
+            self._penalty_until = 0.0
 
     def acquire(self, n: float = 1.0) -> None:
         n = min(max(float(n), 0.0), float(self.capacity))   # 关键: 夹到容量上限
