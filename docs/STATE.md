@@ -72,3 +72,32 @@ docker logs -f m3dsc-freqtrade-dryrun | grep M3
   实时费率查询频率调高 —— 2026-09-11 已因 660 请求/分钟触发过 429 限流事故。
 * dry-run 的成交价按盘口模拟，与实际滑点存在偏差；转实盘前必须用真实盘口复检。
 * 涨幅榜标的的流动性会随榜单变化急剧改变，`SpreadFilter` 与打分里的 `liq` 因子是必要保护。
+## 8. 2026-09-11 23:50 北京时间(15:50 UTC) v0.3.0 更新要点
+
+### 已修复的严重缺陷
+| 编号 | 问题 | 影响 | 修复位置 |
+|---|---|---|---|
+| S1 | 仓位公式漏乘杠杆 | 单笔实际风险为设计值 4 倍 | BTstops_core.plan_positionBT + 单测 |
+| S2 | 止损量纲混用 | 浮盈 3.65% 时止损被贴到 0.11%，被噪声扫出 | BTstops_core.stop_price_distanceBT + 单测 |
+| S3 | 限流错误体当数据 | 基差整轮丢弃、数据断档且统计为 ok | BThttpx.Client.getBT 识别 200+错误体 |
+| A5 | 候选池未截断 | whitelist 膨胀到 55+，加剧限流 | 看板 BT/api/pairlistBT 严格 40 条 |
+| A7 | 启动请求 CoinGecko | 启动被阻塞 2 分 39 秒 | 移除 BTfiat_display_currencyBT |
+
+### 新增能力
+* **单元测试**：BTfreqtrade/tests/unit/test_stops_core.pyBT（19 条），钉死两个量纲不变量：
+  BT|custom_stoploss 返回值| / leverage == 价格距离BT、
+  BT止损触发时权益回撤 <= 风险预算BT；并全参数扫描断言权益回撤 <= 1.5% 硬上限。
+  运行：BTbash scripts/dshc-test.shBT
+* **「多头极端拥挤」反向做空路径**（BTm3_short_revBT）：涨幅榜特有的收割形态 ——
+  打分 <= -35 且年化费率 >= 80% 且 4h RSI >= 82 且 5m 动能转弱时逆势做空，
+  同时**收取**资金费率；离场由费率回落/RSI 修复接管，不依赖趋势反转。
+* **看门狗**：BTbash scripts/dshc-watchdog.sh 300BT，周期检查容器/心跳/API/候选池/429。
+* **研究工具**：BTpython3 scripts/dshc_analyze.py alphaBT 等 5 个子命令。
+
+### 仍待验证（下一阶段）
+1. 资金费计入：需持仓跨过 00:00 北京时间（16:00 UTC）结算点后看 BTfunding_feesBT。
+2. 分批收割：需浮盈 >= 10%，尚未触发过。
+3. 空头通道：需市场出现下跌或极端过热行情。
+4. 打分权重再校准：数据满 12-24 小时后重跑 BTalphaBT（当前仅 20 分钟样本）。
+* 观测期请勿频繁重建容器：22:47-23:35 窗口内 freqtrade 被重建 9 次（含一次 2 分 39 秒停机），
+  那次窗口不构成稳定性依据。
