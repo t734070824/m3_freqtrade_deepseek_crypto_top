@@ -176,6 +176,23 @@ CREATE TABLE IF NOT EXISTS basis_snap (
     PRIMARY KEY (ts_ms, symbol)
 );
 
+-- 榜单与打分快照(5 分钟粒度), 用于分析名次稳定性 / 打分与收益的相关性
+CREATE TABLE IF NOT EXISTS rank_snap (
+    ts_ms       INTEGER NOT NULL,
+    symbol      TEXT NOT NULL,
+    rank        INTEGER,
+    score       REAL,
+    change_24h  REAL,
+    funding_ann REAL,
+    oi_chg_1h   REAL,
+    ls_ratio    REAL,
+    taker_ratio REAL,
+    spread_bps  REAL,
+    tags        TEXT,
+    PRIMARY KEY (ts_ms, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_rank_sym_ts ON rank_snap(symbol, ts_ms DESC);
+
 CREATE TABLE IF NOT EXISTS watchlist (
     ts_ms    INTEGER NOT NULL,
     symbol   TEXT NOT NULL,

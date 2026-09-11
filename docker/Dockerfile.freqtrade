@@ -9,9 +9,11 @@ LABEL org.dsh.project="m3dsc" \
 
 USER root
 
-# 项目配置与策略(频繁改动, 放在最后一层以复用上游缓存)
+# 项目配置(频繁改动, 放在最后一层以复用上游缓存)
 COPY config/ /freqtrade/m3dsc_config/
-COPY freqtrade/user_data/strategies/ /freqtrade/user_data/strategies/
+# 注意: 策略文件**不**复制进镜像。compose 已把 ./freqtrade/user_data 挂载到
+# /freqtrade/user_data, 若镜像内也有一份会导致 freqtrade 扫描到同名策略
+# (告警 DUPLICATE NAME)。以挂载的宿主目录为唯一来源, 便于热迭代。
 
 WORKDIR /freqtrade
 # 注意: 官方镜像把 freqtrade 及全部依赖(ccxt/pandas/rapidjson...)装在 ftuser 的

@@ -114,6 +114,61 @@ def index() -> str:
             f"<td>{' '.join(g.get('tags',[]))}</td></tr>")
     g_html = "".join(g_parts)
 
+    # ---- 收益曲线(按日) ----
+    daily_rows = ""
+    try:
+        dl = _ft_api("/api/v1/daily?timescale=30") or {}
+        data = (dl.get("data") or []) if isinstance(dl, dict) else []
+        dp_html = []
+        for d in data[-14:][::-1]:
+            pa = d.get("abs_profit") or 0.0
+            pr = (d.get("rel_profit") or 0.0) * 100
+            ff = d.get("funding_fees") or 0.0
+            dp_html.append(
+                f"<tr><td>{_hx(str(d.get('date','')))}</td>"
+                f"<td>{d.get('trade_count',0)}</td>"
+                f"<td class='{'up' if pa>0 else 'dn'}'>{pa:+.2f}</td>"
+                f"<td class='{'up' if pr>0 else 'dn'}'>{pr:+.2f}%</td>"
+                f"<td class='{'up' if ff>0 else 'dn'}'>{ff:+.4f}</td></tr>")
+        daily_rows = "".join(dp_html)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("读取按日收益失败: %s", exc)
+
+    # ---- 已平仓交易 ----
+    closed_rows = ""
+    closed_sum = 0.0
+    closed_funding = 0.0
+    try:
+        tr = _ft_api("/api/v1/trades?limit=200") or {}
+        tlist = tr.get("trades", tr) if isinstance(tr, dict) else tr
+        closed = [t for t in (tlist or []) if not t.get("is_open")]
+        closed = closed[-20:][::-1]
+        parts = []
+        for t in closed:
+            pr = t.get("profit_ratio") or 0.0
+            pr_pct = pr * 100
+            pa = t.get("profit_abs") or 0.0
+            ff = t.get("funding_fees") or 0.0
+            closed_sum += pa
+            closed_funding += ff
+            dur = _duration_min(t.get("open_date"), t.get("close_date"))
+            parts.append(
+                f"<tr><td>{_hx(t.get('pair',''))}</td>"
+                f"<td>{'空' if t.get('is_short') else '多'}</td>"
+                f"<td>{_hx(str(t.get('open_date',''))[:19])}</td>"
+                f"<td>{_hx(str(t.get('close_date',''))[:19])}</td>"
+                f"<td>{(t.get('open_rate') or 0):,.6g}</td>"
+                f"<td>{(t.get('close_rate') or 0):,.6g}</td>"
+                f"<td class='{'up' if pr_pct>0 else 'dn'}'>{pr_pct:+.2f}%</td>"
+                f"<td class='{'up' if pa>0 else 'dn'}'>{pa:+.2f}</td>"
+                f"<td class='{'up' if ff>0 else 'dn'}'>{ff:+.4f}</td>"
+                f"<td>{'' if dur is None else f'{dur:.0f}'}</td>"
+                f"<td>{_hx(t.get('exit_reason','') or '')}</td>"
+                f"<td>{_hx(t.get('enter_tag','') or '')}</td></tr>")
+        closed_rows = "".join(parts)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("读取已平仓交易失败: %s", exc)
+
     # 采集健康
     health = []
     if conn:
@@ -190,6 +245,17 @@ td:nth-child(2), td:last-child {{ text-align:left; }}
 <h2>当前持仓 (freqtrade dry-run)</h2>
 <table><tr><th>标的</th><th>方向</th><th>开仓时间(UTC)</th><th>数量</th><th>开仓价</th><th>现价</th><th>收益率</th><th>盈亏USDT</th><th>杠杆</th><th>信号</th></tr>
 {trade_rows or '<tr><td colspan=10>暂无持仓</td></tr>'}</table>
+
+<h2>收益曲线 (按日/按周)</h2>
+<table><tr><th>周期</th><th>交易数</th><th>盈亏USDT</th><th>收益率</th><th>资金费</th></tr>
+{daily_rows or '<tr><td colspan=5>暂无数据</td></tr>'}</table>
+
+<h2>已平仓交易 (最近 20 笔)</h2>
+<table><tr><th>标的</th><th>方向</th><th>开仓(UTC)</th><th>平仓(UTC)</th><th>开仓价</th><th>平仓价</th>
+<th>收益率</th><th>盈亏USDT</th><th>资金费</th><th>持仓分钟</th><th>离场原因</th><th>信号</th></tr>
+{closed_rows or '<tr><td colspan=12>暂无已平仓交易</td></tr>'}</table>
+<div class="note">已平仓合计: <b>{closed_sum:+.2f} USDT</b> · 资金费合计: <b>{closed_funding:+.2f} USDT</b>
+(资金费为正表示「收到」补贴, 为负表示「付出」成本)</div>
 
 <h2>候选池打分 (score&gt;0 利多 / score&lt;0 利空)</h2>
 <table><tr><th>#</th><th>合约</th><th>M3得分</th><th>24h涨幅</th><th>价格</th><th>24h额</th>
@@ -297,6 +363,39 @@ def api_funding(symbol: str) -> Response:
                      "funding_rate": r["funding_rate"],
                      "funding_ann": (r["funding_rate"] or 0) * 3 * 365,
                      "mark_price": r["mark_price"]} for r in rows])
+
+
+@app.get("/api/closed")
+def api_closed() -> Response:
+    """已平仓交易明细 + 汇总 (含 exit_reason / 盈亏 / 持仓时长)."""
+    trades = _ft_api("/api/v1/trades?limit=200") or {}
+    rows = trades.get("trades", trades) if isinstance(trades, dict) else trades
+    out = []
+    for t in (rows or []):
+        if t.get("is_open"):
+            continue
+        out.append({
+            "pair": t.get("pair"), "is_short": t.get("is_short"),
+            "open_date": t.get("open_date"), "close_date": t.get("close_date"),
+            "open_rate": t.get("open_rate"), "close_rate": t.get("close_rate"),
+            "profit_abs": t.get("profit_abs"), "profit_ratio": t.get("profit_ratio"),
+            "exit_reason": t.get("exit_reason"), "enter_tag": t.get("enter_tag"),
+            "leverage": t.get("leverage"), "stake_amount": t.get("stake_amount"),
+            "funding_fees": t.get("funding_fees"),
+            "duration_min": _duration_min(t.get("open_date"), t.get("close_date")),
+        })
+    return jsonify({"count": len(out), "trades": out,
+                    "sum_profit": sum(x["profit_abs"] or 0 for x in out),
+                    "sum_funding": sum(x["funding_fees"] or 0 for x in out)})
+
+
+def _duration_min(a: Any, b: Any) -> float | None:
+    try:
+        from datetime import datetime
+        fa = datetime.fromisoformat(str(a)); fb = datetime.fromisoformat(str(b))
+        return round((fb - fa).total_seconds() / 60.0, 2)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 @app.get("/api/gainers")

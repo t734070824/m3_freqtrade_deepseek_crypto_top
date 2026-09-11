@@ -77,6 +77,7 @@ RETAIN_MS = {
     "funding_hist": 30 * 24 * 3600_000,
     "book_snap": 12 * 3600_000,
     "basis_snap": 4 * 24 * 3600_000,
+    "rank_snap": 30 * 24 * 3600_000,
     "news": 14 * 24 * 3600_000,
 }
 
@@ -121,6 +122,7 @@ class MarketCollector:
         self._meta_loaded_ms = 0
         self._known_symbols: set[str] = set()
         self._funding_filled: set[str] = set()
+        self._funding_cursor: int = 0
         self._started_ms = utc_ms()
 
     # ------------------------------------------------------------ 生命周期
@@ -268,6 +270,22 @@ class MarketCollector:
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.live_dir / "watchlist.json")
 
+        # ---- 榜单/打分快照落库 (5 分钟桶, 用于名次稳定性与「打分 vs 真实收益」归因) ----
+        try:
+            ts5 = now - (now % 300_000)
+            rows = [(ts5, c.symbol, c.rank_gain, c.score, c.change_24h, c.funding_ann,
+                     c.oi_chg_1h, c.ls_ratio, c.taker_ratio, c.spread_bps,
+                     ",".join(c.tags)) for c in cands]
+            if rows:
+                with self._lock:
+                    upsert_many(self.connect(), "rank_snap",
+                                ["ts_ms", "symbol", "rank", "score", "change_24h", "funding_ann",
+                                 "oi_chg_1h", "ls_ratio", "taker_ratio", "spread_bps", "tags"],
+                                rows)
+                    self.connect().commit()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("rank_snap 落库失败: %s", exc)
+
         # 涨幅榜前 N 名符号文件(供人工核对)
         gainers = sorted(
             [(c.symbol, c.change_24h) for c in cands if c.quote_vol >= self.s.min_quote_vol_usdt],
@@ -389,11 +407,20 @@ class MarketCollector:
         return len(rows)
 
     def job_funding_hist(self) -> int:
-        """结算资金费率历史(8h 一条), 用于评估「持有成本」与费率极值统计."""
-        syms = [s for s in self.top_symbols(N_MARK) if s not in self._funding_filled][:40]
-        if not syms:
-            self._funding_filled.clear()  # 一轮之后允许刷新
-            syms = self.top_symbols(20)
+        """结算资金费率历史(通常 8h 一条).
+
+        冷启动策略: 每次处理 40 个符号, 用游标轮转覆盖全部候选合约 ——
+        这样新上线/新进榜的合约也能在数小时内补齐 12 期费率历史, 供策略做
+        「持有成本」评估与费率极值统计。
+        """
+        pool = self.top_symbols(N_MARK)
+        if not pool:
+            return 0
+        n_take = 40
+        if self._funding_cursor >= len(pool):
+            self._funding_cursor = 0
+        syms = pool[self._funding_cursor:self._funding_cursor + n_take]
+        self._funding_cursor = (self._funding_cursor + n_take) % len(pool)
         rows: list[tuple] = []
         for item in self._pmap(lambda s: (s, self.api.funding_rate_history(s, 12)), syms,
                                desc="fundingRate"):
@@ -589,8 +616,8 @@ class MarketCollector:
             if self._stop.is_set():
                 break
             now = utc_ms()
-            log.info("=== M3-DSH 采集状态 (北京时间 %s) 运行 %.1f 分钟 ===",
-                     now_cst().strftime("%Y-%m-%d %H:%M:%S"), (now - self._started_ms) / 60000)
+            log.info("=== M3-DSH 采集状态 (%s) 运行 %.1f 分钟 ===",
+                     fmt_both(now), (now - self._started_ms) / 60000)
             for st in sorted(self._stats.values(), key=lambda s: s.name):
                 log.info("  %-10s 周期%4ds 运行%4d 错误%3d 行/次%6d 耗时%5dms %s",
                          st.name, st.interval, st.runs, st.errors, st.rows, st.last_dur_ms,
@@ -614,8 +641,7 @@ class MarketCollector:
     def run(self) -> int:
         self.install_signals()
         self.connect()
-        log.info("M3-DSH 采集器启动 (北京时间 %s / %s)",
-                 now_cst().strftime("%Y-%m-%d %H:%M:%S"), fmt_both(utc_ms()))
+        log.info("M3-DSH 采集器启动 (%s)", fmt_both(utc_ms()))
         log.info("数据库: %s", self.db_path)
 
         # 首轮同步执行关键任务, 保证 watchlist 尽快产出
@@ -633,7 +659,7 @@ class MarketCollector:
             ("book", 120, self.job_book, 10.0),
             ("oi", self.s.interval_oi, self.job_oi, 15.0),
             ("ratio", self.s.interval_ratio, self.job_ratio, 20.0),
-            ("funding_hist", 3600, self.job_funding_hist, 25.0),
+            ("funding_hist", 900, self.job_funding_hist, 25.0),
             ("basis", self.s.interval_klines, self.job_basis, 30.0),
         ]
         if self.enable_fng:
