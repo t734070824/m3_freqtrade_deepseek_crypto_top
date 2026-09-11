@@ -42,14 +42,14 @@ if __package__ in (None, ""):  # 支持 python dshc/collector.py 直接运行
     from dshc.config import SETTINGS
     from dshc.db import heartbeat, init_db, prune, upsert_many
     from dshc.screener import build_candidates, latest_macro
-    from dshc.timeutil import fmt_both, now_cst, parse_binance_ms, utc_ms
+    from dshc.timeutil import fmt, fmt_both, fmt_cn, now_cst, parse_binance_ms, utc_ms
 else:
     from .binance import (BinanceFutures, NON_TRADABLE_BASES, parse_premium_row,
                           parse_ticker_row, _f)
     from .config import SETTINGS
     from .db import heartbeat, init_db, prune, upsert_many
     from .screener import build_candidates, latest_macro
-    from .timeutil import fmt_both, now_cst, parse_binance_ms, utc_ms
+    from .timeutil import fmt, fmt_both, fmt_cn, now_cst, parse_binance_ms, utc_ms
 
 log = logging.getLogger("dshc.collector")
 
@@ -276,11 +276,12 @@ class MarketCollector:
             return
         now = utc_ms()
         macro = latest_macro(self.connect())
+        # ⚠️ 时区陷阱: 本进程所在容器的 TZ=Asia/Shanghai, 若再手动 +8 小时会「双重偏移」。
+        # 统一改用 timeutil(按 UTC 时间戳 + 显式时区对象换算), 不依赖进程本地时区。
         payload = {
             "generated_ms": now,
-            "generated_utc": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(now / 1000)) + " UTC",
-            "generated_cst": time.strftime("%Y-%m-%d %H:%M:%S",
-                                           time.localtime(now / 1000 + 8 * 3600)) + " 北京时间(UTC+8)",
+            "generated_utc": fmt(now),
+            "generated_cst": fmt_cn(now),
             "macro": macro,
             "n_tradable": len(self.tradable),
             "candidates": [c.to_payload() for c in cands],
