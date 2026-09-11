@@ -36,6 +36,15 @@ class MissingDependency(RuntimeError):
     pass
 
 
+class RateLimitBody(HttpError):
+    """HTTP 200 但响应体是币安错误对象(通常是 -1003 限流)."""
+
+    def __init__(self, code: int, url: str, msg: str) -> None:
+        super().__init__(200, url, f"code={code} msg={msg}")
+        self.code = code
+        self.msg = msg
+
+
 try:  # 可选: 支持 socks5h 代理
     import socks  # type: ignore
     import socket
@@ -83,9 +92,22 @@ class Client:
         """GET 并解析 JSON."""
         body = self.get_text(url, params=params, headers=headers, timeout=timeout)
         try:
-            return json.loads(body)
+            data = json.loads(body)
         except json.JSONDecodeError as exc:  # pragma: no cover
             raise HttpError(0, url, f"JSON 解析失败: {exc}; 前300字符={body[:300]}") from exc
+
+        # ⚠️ 币安在限流/风控时可能返回 **HTTP 200 + 错误体**:
+        #    {"code": -1003, "msg": "Too many requests; current limit of IP(...) is 2400 ..."}
+        # 若直接返回该 dict, 调用方把错误对象当数据用(例如 d["timestamp"] -> KeyError),
+        # 结果是「整轮采集静默丢弃, 而客户端还统计为 ok」——2026-09-11 的真实事故。
+        if isinstance(data, dict) and data.get("code") not in (None, 0):
+            code = int(data.get("code") or 0)
+            msg = str(data.get("msg") or "")
+            self._stats["err"] += 1
+            if code in (-1003, -1015, -1007) and self.limiter is not None:
+                self.limiter.penalize(180.0, 0.2)
+            raise RateLimitBody(code, url, msg)
+        return data
 
     def get_text(self, url: str, params: dict[str, Any] | None = None,
                  headers: dict[str, str] | None = None,

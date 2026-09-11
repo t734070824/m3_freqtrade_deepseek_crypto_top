@@ -311,6 +311,12 @@ def api_summary() -> Response:
 
 _PAIRLIST_CACHE: dict[str, Any] = {"ms": 0, "doc": None}
 
+# 与 dshc/binance.py::NON_TRADABLE_BASES 保持一致(看板为独立文件, 避免相互导入)
+_NON_TRADABLE_BASES = {
+    "USDC", "BUSD", "TUSD", "FDUSD", "DAI", "USDP", "EUR", "AEUR", "USDTB",
+    "USD1", "XUSD", "EURI", "BFUSD", "PAXG",
+}
+
 
 @app.get("/api/pairlist")
 def api_pairlist() -> Response:
@@ -323,12 +329,26 @@ def api_pairlist() -> Response:
     now = utc_ms()
     doc = _PAIRLIST_CACHE.get("doc")
     if doc is None or now - int(_PAIRLIST_CACHE.get("ms", 0)) > 60_000:
+        # 严格只输出 USDT 计价的合约, 且数量受 DSHC_TOP_N 限制
+        # (曾因输出全部候选导致 freqtrade whitelist 膨胀到 55+, 加剧交易所限流)
+        try:
+            top_n = max(5, min(int(os.environ.get("DSHC_TOP_N", "40")), 120))
+        except ValueError:
+            top_n = 40
         pairs: list[str] = []
         try:
             for c in wl().get("candidates", []):
                 sym = str(c.get("symbol", ""))
-                if sym.endswith("USDT"):
-                    pairs.append(f"{sym[:-4]}/USDT:USDT")
+                if not sym.endswith("USDT"):
+                    continue
+                base = sym[:-4]
+                if not base or not base.isascii():
+                    continue          # 跳过「哈基米」这类非 ASCII 合约代码
+                if base in _NON_TRADABLE_BASES:
+                    continue
+                pairs.append(f"{base}/USDT:USDT")
+                if len(pairs) >= top_n:
+                    break
         except Exception as exc:  # noqa: BLE001
             log.warning("读取候选池失败: %s", exc)
         if not pairs:

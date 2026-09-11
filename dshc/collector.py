@@ -371,8 +371,12 @@ class MarketCollector:
         few = syms[:30]
         for item in self._pmap(lambda s: (s, self.api.open_interest_hist(s, "5m", 12)), few,
                                desc="oiHist"):
-            sym, data = item
+            sym, data = item if isinstance(item, tuple) and len(item) == 2 else (None, None)
+            if not sym or not isinstance(data, list):
+                continue
             for d in data:
+                if not isinstance(d, dict) or "timestamp" not in d:
+                    continue
                 hist.append((parse_binance_ms(d["timestamp"]), sym,
                              _f(d.get("sumOpenInterest")), _f(d.get("sumOpenInterestValue")), "5m"))
 
@@ -391,12 +395,17 @@ class MarketCollector:
             return 0
         rows: list[tuple] = []
 
+        def _rows(data: Any) -> list[dict]:
+            """只保留带 timestamp 的合法行(交易所限流时可能返回错误体)."""
+            if not isinstance(data, list):
+                return []
+            return [d for d in data if isinstance(d, dict) and "timestamp" in d]
+
         def one(sym: str):
-            kind, api = "top_position", self.api.top_long_short_position_ratio
-            a = api(sym, "5m", 12)
-            b = self.api.global_long_short_account_ratio(sym, "5m", 12)
-            c = self.api.taker_long_short_ratio(sym, "5m", 12)
-            ta = self.api.top_long_short_account_ratio(sym, "5m", 12)
+            a = _rows(self.api.top_long_short_position_ratio(sym, "5m", 12))
+            b = _rows(self.api.global_long_short_account_ratio(sym, "5m", 12))
+            c = _rows(self.api.taker_long_short_ratio(sym, "5m", 12))
+            ta = _rows(self.api.top_long_short_account_ratio(sym, "5m", 12))
             out = []
             for d in ta:
                 out.append((parse_binance_ms(d["timestamp"]), sym, "top_account",
@@ -486,8 +495,12 @@ class MarketCollector:
         rows = []
         for item in self._pmap(lambda s: (s, self.api.basis(s, "PERPETUAL", "5m", 3)), syms,
                                desc="basis"):
-            sym, data = item
+            sym, data = item if isinstance(item, tuple) and len(item) == 2 else (None, None)
+            if not sym or not isinstance(data, list):
+                continue          # 单个 symbol 失败不影响整轮
             for d in data:
+                if not isinstance(d, dict) or "timestamp" not in d:
+                    continue      # 交易所限流时可能返回错误体, 直接跳过
                 br = _f(d.get("basisRate"))
                 rows.append((parse_binance_ms(d["timestamp"]), sym,
                              _f(d.get("futuresPrice")), _f(d.get("indexPrice")),
@@ -612,9 +625,13 @@ class MarketCollector:
             self._stop.wait(wait)
 
     def _loop_prune(self) -> None:
+        """周期清理过期数据. 启动后先立即执行一次, 避免长时间不清理导致磁盘膨胀."""
         st = self._stats.setdefault("prune", WorkerStat(name="prune", interval=1800))
+        first = True
         while not self._stop.is_set():
-            self._stop.wait(1800)
+            if not first:
+                self._stop.wait(1800)
+            first = False
             if self._stop.is_set():
                 break
             n = 0
@@ -695,11 +712,12 @@ class MarketCollector:
             t.start()
             threads.append(t)
 
+        self._dump_status()
         while not self._stop.is_set():
             self._stop.wait(1.0)
         for t in threads:
             t.join(timeout=30)
-        self._dump_status()
+        self._dump_status()   # 退出前再落盘一次(SIGTERM 场景)
         if self.conn:
             self.conn.commit()
             self.conn.close()

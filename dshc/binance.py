@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Iterable, Sequence
 
-from .httpx import Client, HttpError, RateLimiter
+from .httpx import Client, HttpError, RateLimiter  # noqa: F401 (HttpError 供 basis 校验使用)
 from .timeutil import parse_binance_ms, utc_ms
 
 log = logging.getLogger("dshc.binance")
@@ -154,11 +154,14 @@ class BinanceFutures:
     # ------------------------------------------------------------ 基差/其他
     def basis(self, pair: str, contract_type: str = "PERPETUAL", period: str = "5m",
               limit: int = 30) -> list[dict[str, Any]]:
+        """期现基差. 只返回合法列表 —— 任何非列表结构一律视为错误(抛异常), 由调用方跳过."""
         self.limiter.acquire(1)
         data = self.http.get(f"{self.base}/futures/data/basis", params={
             "pair": pair, "contractType": contract_type, "period": period, "limit": limit,
         })
-        return data if isinstance(data, list) else [data]
+        if not isinstance(data, list):
+            raise HttpError(200, f"basis/{pair}", f"非预期结构: {str(data)[:200]}")
+        return [d for d in data if isinstance(d, dict) and "timestamp" in d]
 
 
 def _json_list(symbols: Iterable[str]) -> str:
