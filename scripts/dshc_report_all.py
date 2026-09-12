@@ -31,14 +31,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CST = timezone(timedelta(hours=8))
 
+# 运行中的实验(端口不要复用: 实验 A 停用后, 其档位 18081 已交给实验 F)
 BOTS = [
-    ("A", "追涨 M3GainersTrend", "m3dsc-freqtrade-dryrun", "DSHC_FT_API_PORT", 18081),
+    ("F", "负费率+急跌 M3CarryDip", "m3dsc-freqtrade-f", "DSHC_F_API_PORT", 18081),
     ("B", "反弹 M3DipRevert", "m3dsc-freqtrade-dip", "DSHC_DIP_API_PORT", 18084),
     ("C", "Carry M3CarryLong", "m3dsc-freqtrade-carry", "DSHC_CARRY_API_PORT", 18085),
     ("D", "突破 M3VolBreakout", "m3dsc-freqtrade-vol", "DSHC_VOL_API_PORT", 18086),
     ("E", "费率空 M3FundingShort", "m3dsc-freqtrade-fshort", "DSHC_FSHORT_API_PORT", 18087),
 ]
 INFRA = ["m3dsc-market-collector", "m3dsc-dashboard"]
+# 已停用的实验(容器已 stop, 保留用于历史对照; 不参与实时统计)
+STOPPED = [
+    ("A", "追涨 M3GainersTrend", "m3dsc-freqtrade-dryrun",
+     "69 笔样本判定负期望: 期望 -1.143 USDT/笔, 盈亏比 0.30, PF 0.61, 累计 -87.55"),
+]
 
 
 def now_stamp() -> str:
@@ -128,7 +134,7 @@ def main() -> int:
     # ---------------- 1. 容器 ----------------
     print("\n【1】容器运行情况")
     print("  %-28s %-10s %-8s %-7s %-9s %s" % ("容器", "状态", "运行时长", "重启", "CPU", "内存"))
-    for name in INFRA + [b[2] for b in BOTS]:
+    for name in INFRA + [b[2] for b in BOTS] + [s[2] for s in STOPPED]:
         ci = container_info(name)
         print("  %-28s %-10s %-8s %-7s %-9s %s" % (name, ci["status"], ci["uptime"],
                                                    ci["restarts"], ci["cpu"], ci["mem"]))
@@ -168,6 +174,11 @@ def main() -> int:
             results[code]["avg_loss"], rr, exp, funding))
 
     # ---------------- 3. 持仓 ----------------
+    print("\n【2b】已停用的实验(保留历史结论, 不参与实时统计)")
+    for code, label, container, note in STOPPED:
+        print("  %s %-22s 容器 %s" % (code, label, container_info(container)["status"]))
+        print("     %s" % note)
+
     print("\n【3】当前持仓")
     any_pos = False
     for code, label, container, envkey, default_port in BOTS:
@@ -215,7 +226,7 @@ def main() -> int:
     # ---------------- 5. 异常扫描 ----------------
     print("\n【5】异常扫描(近 10 分钟)")
     print("  %-28s %6s %7s %10s %8s" % ("容器", "429", "ERROR", "Traceback", "网络超时"))
-    for name in INFRA + [b[2] for b in BOTS]:
+    for name in INFRA + [b[2] for b in BOTS] + [s[2] for s in STOPPED]:
         s = scan_logs(name, 600)
         flag = "" if (s["429"] == 0 and s["error"] == 0 and s["traceback"] == 0) else "  <-- 需关注"
         print("  %-28s %6d %7d %10d %8d%s" % (name, s["429"], s["error"], s["traceback"],
