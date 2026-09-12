@@ -27,6 +27,7 @@ BOTS = [
     ("B 反弹 M3DipRevert", "DSHC_DIP_API_PORT", 18084),
     ("C Carry M3CarryLong", "DSHC_CARRY_API_PORT", 18085),
     ("D 突破 M3VolBreakout", "DSHC_VOL_API_PORT", 18086),
+    ("E 费率空 M3FundingShort", "DSHC_FSHORT_API_PORT", 18087),
 ]
 
 
@@ -89,7 +90,7 @@ def main() -> int:
     e = env()
 
     print("=" * 96)
-    print("M3-DSH 多实验对比 (A 追涨 / B 反弹 / C Carry / D 突破)")
+    print("M3-DSH 多实验对比 (A 追涨 / B 反弹 / C Carry / D 突破 / E 费率空)")
     print("=" * 96)
     results = {}
     for name, envkey, default in BOTS:

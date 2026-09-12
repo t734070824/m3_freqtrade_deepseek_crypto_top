@@ -74,7 +74,7 @@ RETAIN_MS = {
     "oi_now": 4 * 24 * 3600_000,
     "oi_hist": 4 * 24 * 3600_000,
     "ls_ratio": 7 * 24 * 3600_000,
-    "funding_hist": 30 * 24 * 3600_000,
+    "funding_hist": 420 * 24 * 3600_000,   # 保留 14 个月: 费率极值判断需要长历史
     "book_snap": 12 * 3600_000,
     "basis_snap": 4 * 24 * 3600_000,
     "rank_snap": 30 * 24 * 3600_000,
@@ -463,32 +463,48 @@ class MarketCollector:
             self.connect().commit()
         return len(rows)
 
+    # 每轮处理的合约数(轮转)与单次拉取条数。
+    # 120 条 × 8h ≈ 40 天历史, 足够做「自身历史分位」判断;
+    # 8 个合约/轮 × 900 秒 => 约 660 个请求/小时的 1/8, 与其它任务共享 3 rps 节流后约 6 分钟跑完一轮。
+    FUNDING_BATCH = 8
+    FUNDING_BACKFILL_LIMIT = 120
+    FUNDING_INC_LIMIT = 12
+
     def job_funding_hist(self) -> int:
         """结算资金费率历史(通常 8h 一条).
 
-        冷启动策略: 每次处理 40 个符号, 用游标轮转覆盖全部候选合约 ——
-        这样新上线/新进榜的合约也能在数小时内补齐 12 期费率历史, 供策略做
-        「持有成本」评估与费率极值统计。
+        ⚠️ 关键: 首次遇到某个 symbol 时**拉全量历史**(limit=1000), 之后只增量补 12 条。
+        原因(2026-09-12 实测): 原来的实现每次只取 12 条, 导致每币历史上限就是 12 条,
+        根本无法判断「当前费率是否处于该币自身的历史极值」—— 而这正是费率反转策略的核心。
         """
         pool = self.top_symbols(N_MARK)
         if not pool:
             return 0
-        n_take = 40
+        n_take = self.FUNDING_BATCH
         if self._funding_cursor >= len(pool):
             self._funding_cursor = 0
         syms = pool[self._funding_cursor:self._funding_cursor + n_take]
         self._funding_cursor = (self._funding_cursor + n_take) % len(pool)
         rows: list[tuple] = []
-        for item in self._pmap(lambda s: (s, self.api.funding_rate_history(s, 12)), syms,
-                               desc="fundingRate"):
-            sym, data = item
+        def fetch(sym: str):
+            limit = (self.FUNDING_INC_LIMIT if sym in self._funding_filled
+                     else self.FUNDING_BACKFILL_LIMIT)
+            return sym, self.api.funding_rate_history(sym, limit)
+
+        for item in self._pmap(fetch, syms, desc="fundingRate"):
+            sym, data = item if isinstance(item, tuple) and len(item) == 2 else (None, None)
+            if not sym or not isinstance(data, list):
+                continue
             for d in data:
+                if not isinstance(d, dict) or "fundingTime" not in d:
+                    continue
                 rows.append((parse_binance_ms(d["fundingTime"]), sym,
                              _f(d.get("fundingRate")), _f(d.get("markPrice"))))
         if rows:
             with self._lock:
                 upsert_many(self.connect(), "funding_hist",
                             ["ts_ms", "symbol", "funding_rate", "mark_price"], rows)
+                # 用 upsert 覆盖, 无需降采样; 但删除 400 天前的数据控制体积
                 self.connect().commit()
             self._funding_filled.update(syms)
         return len(rows)
@@ -725,6 +741,10 @@ class MarketCollector:
             ("oi", self.s.interval_oi, self.job_oi, 15.0),
             ("ratio", self.s.interval_ratio, self.job_ratio, 20.0),
             ("basis", self.s.interval_klines, self.job_basis, 30.0),
+            # ⚠️ 费率历史必须保留: 「当前费率是否处于该币自身历史极值」是费率反转策略的
+            #    核心输入。此前为了省请求把它整条删掉, 导致分位数永远无法计算(2026-09-12)。
+            #    现在改为轮转分批(每轮 8 个合约 × 最多 120 条)以控制请求量。
+            ("funding_hist", 900, self.job_funding_hist, 35.0),
         ]
         if self.enable_fng:
             plan.append(("fng", self.s.interval_fng, self.job_fng, 8.0))

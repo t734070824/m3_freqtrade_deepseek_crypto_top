@@ -5,6 +5,7 @@
 #   B 反弹   m3dsc-freqtrade-dip     M3DipRevert      急跌反弹            :18084
 #   C Carry  m3dsc-freqtrade-carry   M3CarryLong      负费率长持          :18085
 #   D 突破   m3dsc-freqtrade-vol     M3VolBreakout    波动压缩放量突破     :18086
+#   E 费率空 m3dsc-freqtrade-fshort M3FundingShort   费率极值反转做空     :18087
 #
 # 用法: bash scripts/dshc-monitor.sh [间隔秒, 默认 300]
 source "$(dirname "${BASH_SOURCE[0]}")/dshc-env.sh"
@@ -16,6 +17,7 @@ P_A="${DSHC_FT_API_PORT:-18081}"
 P_B="${DSHC_DIP_API_PORT:-18084}"
 P_C="${DSHC_CARRY_API_PORT:-18085}"
 P_D="${DSHC_VOL_API_PORT:-18086}"
+P_E="${DSHC_FSHORT_API_PORT:-18087}"
 
 snap() {   # $1=key $2=port
   curl -s -m 10 -u "$AUTH" "http://127.0.0.1:$2/api/v1/profit" > "/tmp/m3mon_$1.p" 2>/dev/null || echo '{}' > "/tmp/m3mon_$1.p"
@@ -25,10 +27,11 @@ snap() {   # $1=key $2=port
 printf '\n===== 监控启动 %s =====\n' "$(dshc_now_cst)" >> "$LOG"
 while true; do
   TS="$(dshc_now_cst)"
-  snap A "$P_A"; snap B "$P_B"; snap C "$P_C"; snap D "$P_D"
+  snap A "$P_A"; snap B "$P_B"; snap C "$P_C"; snap D "$P_D"; snap E "$P_E"
 
   python3 - "$TS" /tmp/m3mon_A.p /tmp/m3mon_A.s /tmp/m3mon_B.p /tmp/m3mon_B.s \
            /tmp/m3mon_C.p /tmp/m3mon_C.s /tmp/m3mon_D.p /tmp/m3mon_D.s \
+           /tmp/m3mon_E.p /tmp/m3mon_E.s \
            "$DSHC_DATA_DIR/live/collector_status.json" >> "$LOG" 2>&1 <<'PYEOF'
 import json, sys
 ts = sys.argv[1]
@@ -38,7 +41,8 @@ def load(p, d):
     except Exception:
         return d
 labels = [("A 追涨 ", sys.argv[2], sys.argv[3]), ("B 反弹 ", sys.argv[4], sys.argv[5]),
-          ("C Carry", sys.argv[6], sys.argv[7]), ("D 突破 ", sys.argv[8], sys.argv[9])]
+          ("C Carry", sys.argv[6], sys.argv[7]), ("D 突破 ", sys.argv[8], sys.argv[9]),
+          ("E 费率空", sys.argv[10], sys.argv[11])]
 out = []
 for label, pfile, sfile in labels:
     p = load(pfile, {}); st = load(sfile, [])
@@ -52,7 +56,7 @@ for label, pfile, sfile in labels:
             t.get("current_rate", 0), t.get("profit_pct", 0) or 0,
             t.get("profit_abs", 0) or 0, t.get("leverage", 1)))
 try:
-    c = json.load(open(sys.argv[10]))
+    c = json.load(open(sys.argv[12]))
     w = c.get("workers", {})
     out.append("      采集: " + " ".join("%s=%d" % (k, v.get("runs", 0)) for k, v in sorted(w.items())))
 except Exception:
@@ -60,7 +64,7 @@ except Exception:
 print("\n".join(out), flush=True)
 PYEOF
 
-  for c in freqtrade-dryrun freqtrade-dip freqtrade-carry freqtrade-vol; do
+  for c in freqtrade-dryrun freqtrade-dip freqtrade-carry freqtrade-vol freqtrade-fshort; do
     N429=$(docker logs --since "${INTERVAL}s" "${DSHC_PREFIX}-$c" 2>&1 | grep -c '429' || true)
     [[ "${N429:-0}" -gt 0 ]] && echo "      [告警] $c 429 x$N429" >> "$LOG"
   done

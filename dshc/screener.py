@@ -86,6 +86,12 @@ class Candidate:
     vol_ratio: float = 0.0          # 24h成交额 / 7日均值(需历史, 可缺省)
     score: float = 0.0
     stability: float = 0.0
+    # 费率分位信息(供「费率极值反转」类策略使用)
+    funding_pct_rank: float = 0.0     # 当前费率在该币自身历史中的分位(0~1)
+    funding_p25: float = 0.0
+    funding_p75: float = 0.0
+    funding_p95: float = 0.0
+    funding_samples: int = 0
     rank_gain: int = 0
     tags: list[str] = field(default_factory=list)
     details: dict[str, float] = field(default_factory=dict)
@@ -101,7 +107,8 @@ class Candidate:
             "global_ls": self.global_ls, "taker_ratio": self.taker_ratio,
             "basis_rate": self.basis_rate, "spread_bps": self.spread_bps,
             "score": self.score, "rank_gain": self.rank_gain, "tags": self.tags,
-            "stability": self.stability,
+            "stability": self.stability, "funding_pct_rank": self.funding_pct_rank,
+            "funding_p95": self.funding_p95, "funding_samples": self.funding_samples,
         }
 
 
@@ -116,6 +123,53 @@ def _squash(x: float, scale: float) -> float:
     if scale <= 0:
         return 0.0
     return math.tanh(x / scale)
+
+
+def funding_percentile(conn: sqlite3.Connection, symbols: Sequence[str] | None = None,
+                       *, min_samples: int = 30) -> dict[str, dict[str, float]]:
+    """计算每个合约「当前费率在其自身历史中的分位」.
+
+    为什么要分位而不是绝对阈值(2026-09-12 实测):
+        市场整体的费率水平会随时间大幅漂移 —— 当天全体候选的最大年化仅 5.5%,
+        若把门槛写死成「年化 >= 100%」则永不触发; 反之在费率普遍高企的行情里
+        绝对阈值又形同虚设。
+        用「该币自身历史分位」可以自适应: 无论市场处于何种费率环境,
+        都能捕捉到「相对自己而言极端」的那一批。
+
+    返回 {symbol: {"cur": 当前费率, "p50"/"p90"/"p95"/"p99": 历史分位,
+                   "pct_rank": 当前值的历史分位(0~1), "n": 样本数}}
+    """
+    out: dict[str, dict[str, float]] = {}
+    sql = "SELECT symbol, ts_ms, funding_rate FROM funding_hist WHERE funding_rate IS NOT NULL"
+    args: list[Any] = []
+    if symbols:
+        sql += " WHERE symbol IN (%s)" % ",".join("?" * len(symbols))
+        args = list(symbols)
+    per: dict[str, list[float]] = {}
+    latest: dict[str, float] = {}
+    try:
+        for r in conn.execute(sql + " ORDER BY symbol, ts_ms", args):
+            per.setdefault(r["symbol"], []).append(float(r["funding_rate"]))
+        for r in conn.execute("""
+            SELECT m.symbol, m.last_funding_rate FROM perp_mark m
+            JOIN (SELECT symbol, MAX(ts_ms) mx FROM perp_mark GROUP BY symbol) x
+              ON m.symbol=x.symbol AND m.ts_ms=x.mx
+        """):
+            if r["last_funding_rate"] is not None:
+                latest[r["symbol"]] = float(r["last_funding_rate"])
+    except sqlite3.OperationalError:
+        return {}          # 表结构不完整(如精简测试库) -> 返回空, 不影响其它因子
+    for sym, hist in per.items():
+        cur = latest.get(sym)
+        if cur is None or len(hist) < min_samples:
+            continue
+        sv = sorted(hist)
+        def q(p: float) -> float:
+            return sv[min(int(len(sv) * p), len(sv) - 1)]
+        below = sum(1 for v in sv if v <= cur)
+        out[sym] = {"cur": cur, "p50": q(0.50), "p90": q(0.90), "p95": q(0.95),
+                    "p99": q(0.99), "pct_rank": below / len(sv), "n": float(len(sv))}
+    return out
 
 
 def load_features(conn: sqlite3.Connection, ts_ms: int,
@@ -372,6 +426,7 @@ def build_candidates(conn: sqlite3.Connection, *, top_n: int = 40,
     feats = load_features(conn, ts)
     macro = latest_macro(conn)
     stab = rank_stability(conn) if use_stability else {}
+    fq = funding_percentile(conn) if use_stability else {}
 
     # 24h 涨幅榜排名(仅在通过流动性门槛的合约内排名)
     ranked = sorted(
@@ -415,6 +470,13 @@ def build_candidates(conn: sqlite3.Connection, *, top_n: int = 40,
         )
         s, parts = score_candidate(c, weights, macro)
         # 稳定性因子: 只在「有真实霸榜历史」时加分(避免冷启动噪声)
+        fqi = fq.get(sym)
+        if fqi:
+            c.funding_pct_rank = round(fqi["pct_rank"], 4)
+            c.funding_p25 = round(fqi["p50"], 8)
+            c.funding_p75 = round(fqi["p90"], 8)
+            c.funding_p95 = round(fqi["p95"], 8)
+            c.funding_samples = int(fqi["n"])
         st = stab.get(sym)
         if st and st.get("n", 0) >= 3:      # 至少 3 个采样点(约 15 分钟)才启用稳定性因子
             stick = _stickiness(st)
