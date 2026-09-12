@@ -132,6 +132,82 @@ services:
       options: { max-size: "20m", max-file: "5" }
 
   # ------------------------------------------------------------------
+  # 对照实验 C: 负费率 Carry 多头(长持, 让资金费成为收益项)
+  m3dsc-freqtrade-carry:
+    image: m3dsc-freqtrade:0.1.0
+    container_name: m3dsc-freqtrade-carry
+    restart: unless-stopped
+    user: "1000:1000"
+    depends_on:
+      m3dsc-market-collector:
+        condition: service_started
+      m3dsc-dashboard:
+        condition: service_started
+    environment:
+      <<: *common-env
+      FREQTRADE__API_SERVER__USERNAME: "${DSHC_FT_API_USER:-m3dsc}"
+      FREQTRADE__API_SERVER__PASSWORD: "${DSHC_FT_API_PASS:-change_me_m3dsc}"
+      FREQTRADE__API_SERVER__JWT_SECRET_KEY: "${DSHC_FT_JWT_SECRET:-m3dsc-jwt}"
+      FREQTRADE__API_SERVER__WS_TOKEN: "${DSHC_FT_WS_TOKEN:-m3dsc-ws}"
+      FREQTRADE__API_SERVER__LISTEN_PORT: "8080"
+      FREQTRADE__EXCHANGE__KEY: "${DSHC_BINANCE_KEY:-}"
+      FREQTRADE__EXCHANGE__SECRET: "${DSHC_BINANCE_SECRET:-}"
+    volumes:
+      - ./config:/freqtrade/m3dsc_config:ro
+      - ./freqtrade/user_data:/freqtrade/user_data
+      - ./data:/workspace/data
+      - ./logs:/workspace/logs
+    ports:
+      - "127.0.0.1:${DSHC_CARRY_API_PORT:-18085}:8080"
+    command: >
+      trade
+      --config /freqtrade/m3dsc_config/config-carry-dryrun.json
+      --strategy M3CarryLong
+      --strategy-path /freqtrade/user_data/strategies
+      --logfile /workspace/logs/freqtrade-carry.log
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  # ------------------------------------------------------------------
+  # 对照实验 D: 波动压缩后放量突破(买在爆发第一根)
+  m3dsc-freqtrade-vol:
+    image: m3dsc-freqtrade:0.1.0
+    container_name: m3dsc-freqtrade-vol
+    restart: unless-stopped
+    user: "1000:1000"
+    depends_on:
+      m3dsc-market-collector:
+        condition: service_started
+      m3dsc-dashboard:
+        condition: service_started
+    environment:
+      <<: *common-env
+      FREQTRADE__API_SERVER__USERNAME: "${DSHC_FT_API_USER:-m3dsc}"
+      FREQTRADE__API_SERVER__PASSWORD: "${DSHC_FT_API_PASS:-change_me_m3dsc}"
+      FREQTRADE__API_SERVER__JWT_SECRET_KEY: "${DSHC_FT_JWT_SECRET:-m3dsc-jwt}"
+      FREQTRADE__API_SERVER__WS_TOKEN: "${DSHC_FT_WS_TOKEN:-m3dsc-ws}"
+      FREQTRADE__API_SERVER__LISTEN_PORT: "8080"
+      FREQTRADE__EXCHANGE__KEY: "${DSHC_BINANCE_KEY:-}"
+      FREQTRADE__EXCHANGE__SECRET: "${DSHC_BINANCE_SECRET:-}"
+    volumes:
+      - ./config:/freqtrade/m3dsc_config:ro
+      - ./freqtrade/user_data:/freqtrade/user_data
+      - ./data:/workspace/data
+      - ./logs:/workspace/logs
+    ports:
+      - "127.0.0.1:${DSHC_VOL_API_PORT:-18086}:8080"
+    command: >
+      trade
+      --config /freqtrade/m3dsc_config/config-vol-dryrun.json
+      --strategy M3VolBreakout
+      --strategy-path /freqtrade/user_data/strategies
+      --logfile /workspace/logs/freqtrade-vol.log
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  # ------------------------------------------------------------------
   m3dsc-dashboard:
     image: m3dsc-collector:0.1.0
     build:

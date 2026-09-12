@@ -1,27 +1,21 @@
 {
   "$schema": "https://schema.freqtrade.io/schema.json",
-  "_comment": "M3-DSH 对照实验: 急跌反弹策略 (M3DipRevert)。与 config-dryrun.json 唯一的差别是策略名、数据库、日志与资金上限, 其余风控口径完全一致, 以保证两个 dry-run 可比。",
-  "bot_name": "m3dsc-dip-dryrun",
+  "_comment": "M3-DSH 实验 CARRY: M3CarryLong. 与其它实验共用数据与 stops_core 风控内核, 独立记账以对比期望值。",
   "initial_state": "running",
-  "max_open_trades": 4,
   "stake_currency": "USDT",
   "stake_amount": "unlimited",
   "tradable_balance_ratio": 0.9,
-  "available_capital": 500,
   "amend_last_stake_amount": true,
   "last_stake_amount_min_ratio": 0.2,
   "dry_run": true,
-  "dry_run_wallet": 500,
   "cancel_open_orders_on_exit": true,
   "trading_mode": "futures",
   "margin_mode": "isolated",
   "liquidation_buffer": 0.1,
   "timeframe": "5m",
-  "strategy": "M3DipRevert",
   "minimal_roi": {},
   "stoploss": -0.2,
   "use_custom_stoploss": true,
-  "position_adjustment_enable": false,
   "force_entry_enable": false,
   "entry_pricing": {
     "price_side": "same",
@@ -93,20 +87,20 @@
   },
   "pairlists": [
     {
-      "_comment": "与主策略共用同一份候选池, 保证对照实验的标的集合一致",
+      "_comment": "共用同一份候选池(带迟滞), 保证各实验标的集合一致",
       "method": "RemotePairList",
       "mode": "whitelist",
       "processing_mode": "append",
-      "pairlist_url": "http://m3dsc-dashboard:8081/api/pairlist?n=30",
+      "pairlist_url": "http://m3dsc-dashboard:8081/api/pairlist?n=25",
       "number_assets": 60,
-      "refresh_period": 60,
+      "refresh_period": 600,
       "keep_pairlist_on_failure": true,
       "read_timeout": 10
     },
     {
       "method": "SpreadFilter",
       "max_spread_ratio": 0.01,
-      "refresh_period": 30
+      "refresh_period": 300
     },
     {
       "method": "AgeFilter",
@@ -129,8 +123,8 @@
     "listen_ip_address": "0.0.0.0",
     "listen_port": 8080,
     "enable_openapi": true,
-    "jwt_secret_key": "m3dsc-dip-jwt-secret-overridden-by-env",
-    "ws_token": "m3dsc-dip-ws-token-overridden",
+    "jwt_secret_key": "m3dsc-exp-jwt-overridden-by-env",
+    "ws_token": "m3dsc-exp-ws-overridden",
     "CORS_origins": [
       "*"
     ],
@@ -143,7 +137,13 @@
   },
   "dataformat_ohlcv": "feather",
   "dataformat_trades": "feather",
-  "logfile": "/workspace/logs/freqtrade-dip.log",
-  "db_url": "sqlite:////freqtrade/user_data/m3dsc-dip.sqlite",
+  "bot_name": "m3dsc-carry-dryrun",
+  "strategy": "M3CarryLong",
+  "max_open_trades": 3,
+  "dry_run_wallet": 500,
+  "available_capital": 500,
+  "position_adjustment_enable": true,
+  "logfile": "/workspace/logs/freqtrade-carry.log",
+  "db_url": "sqlite:////freqtrade/user_data/m3dsc-carry.sqlite",
   "_comment_pricing": "币安 USD-M 合约的 ticker 不提供价格, freqtrade 强制要求 use_order_book=true(否则启动即报 'Ticker pricing not available for Binance')。 因此限流治理改为降低决策频率: process_throttle_secs=15(原 5) 且各实验白名单更小。"
 }

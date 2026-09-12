@@ -333,19 +333,28 @@ def api_pairlist() -> Response:
     """freqtrade RemotePairList 专用端点.
 
     契约: {"pairs": ["BTC/USDT:USDT", ...], "refresh_period": N}
-    数据来自采集器产出的 watchlist.json(已按 |score| 排序)。
-    60 秒缓存, 避免 freqtrade 高频刷新把本服务打爆。
+
+    两个关键设计(都是 429 限流事故的产物):
+    1. **主池缓存 + 迟滞**: 主池(DSHC_TOP_N 条)每 PAIRLIST_MIN_INTERVAL_S 才重算,
+       且变动 < PAIRLIST_MAX_CHURN 时沿用旧池 —— 否则 freqtrade 白名单持续抖动,
+       每换入一个新对就要重拉 5m+1h 历史 K 线, 打爆共享的 2400 weight/min 配额。
+    2. **按 ?n= 切分**: 各实验可用不同规模的池子(越小启动越省配额),
+       但都来自**同一份已排序主池** —— 保证标的集合一致、实验可比, 且不做二次迟滞。
     """
+    try:
+        default_n = int(os.environ.get("DSHC_TOP_N", "40"))
+    except ValueError:
+        default_n = 40
+    try:
+        req_n = int(request.args.get("n", default_n))
+    except (TypeError, ValueError):
+        req_n = default_n
+    top_n = max(5, min(req_n, 120))
+
     now = utc_ms()
-    doc = _PAIRLIST_CACHE.get("doc")
-    if doc is None or now - int(_PAIRLIST_CACHE.get("ms", 0)) > PAIRLIST_MIN_INTERVAL_S * 1000:
-        # 严格只输出 USDT 计价的合约, 且数量受 DSHC_TOP_N 限制
-        # (曾因输出全部候选导致 freqtrade whitelist 膨胀到 55+, 加剧交易所限流)
-        try:
-            top_n = max(5, min(int(os.environ.get("DSHC_TOP_N", "40")), 120))
-        except ValueError:
-            top_n = 40
-        pairs: list[str] = []
+    main = list(_PAIRLIST_CACHE.get("pairs") or [])
+    if not main or now - int(_PAIRLIST_CACHE.get("ms", 0)) > PAIRLIST_MIN_INTERVAL_S * 1000:
+        fresh: list[str] = []
         try:
             for c in wl().get("candidates", []):
                 sym = str(c.get("symbol", ""))
@@ -353,29 +362,29 @@ def api_pairlist() -> Response:
                     continue
                 base = sym[:-4]
                 if not base or not base.isascii():
-                    continue          # 跳过「哈基米」这类非 ASCII 合约代码
+                    continue          # 跳过非 ASCII 合约代码(如某些中文名的币)
                 if base in _NON_TRADABLE_BASES:
                     continue
-                pairs.append(f"{base}/USDT:USDT")
-                if len(pairs) >= top_n:
+                fresh.append(f"{base}/USDT:USDT")
+                if len(fresh) >= default_n:
                     break
         except Exception as exc:  # noqa: BLE001
             log.warning("读取候选池失败: %s", exc)
-        if not pairs:
-            pairs = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
-        # ---- 迟滞: 变动幅度不足或距上次换池太近时, 沿用旧池 ----
-        prev = list(_PAIRLIST_CACHE.get("pairs") or [])
-        if prev:
-            changed = len(set(pairs) ^ set(prev)) / max(len(set(prev)), 1)
+        if not fresh:
+            fresh = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
+        if main:
+            changed = len(set(fresh) ^ set(main)) / max(len(set(main)), 1)
             if changed < PAIRLIST_MAX_CHURN:
-                pairs = prev                     # 变化不大 -> 保持稳定, 避免 K 线重拉
+                fresh = main                     # 变化不大 -> 保持稳定, 避免 K 线重拉
             else:
-                # 变化较大: 保留仍然合格的旧成员在前, 新成员补位(减少同时换掉的数量)
-                keep = [p for p in prev if p in pairs]
-                add = [p for p in pairs if p not in keep]
-                pairs = (keep + add)[:top_n]
-        doc = {"pairs": pairs, "refresh_period": PAIRLIST_MIN_INTERVAL_S}
-        _PAIRLIST_CACHE.update({"ms": now, "doc": doc, "pairs": pairs})
+                keep = [p for p in main if p in fresh]
+                add = [p for p in fresh if p not in keep]
+                fresh = (keep + add)[:default_n]
+        main = fresh
+        _PAIRLIST_CACHE.update({"ms": now, "pairs": main})
+
+    pairs = main[:top_n] if main else ["BTC/USDT:USDT", "ETH/USDT:USDT"]
+    doc = {"pairs": pairs, "refresh_period": PAIRLIST_MIN_INTERVAL_S}
     return Response(json.dumps(doc, ensure_ascii=False), mimetype="application/json")
 
 

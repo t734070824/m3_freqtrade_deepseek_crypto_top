@@ -20,7 +20,7 @@
   "strategy": "M3GainersTrend",
   "minimal_roi": {},
   "_comment_stoploss": "兜底止损(权益口径, 含杠杆): 实际止损由策略 custom_stoploss 动态给出; -0.20 对应 4x 下 5% 价格距离, 与 MAX_STAKE_RATIO=35% 的组合最多亏 1.75% 权益",
-  "stoploss": -0.20,
+  "stoploss": -0.2,
   "use_custom_stoploss": true,
   "position_adjustment_enable": true,
   "force_entry_enable": false,
@@ -28,7 +28,7 @@
     "price_side": "same",
     "use_order_book": true,
     "order_book_top": 1,
-    "price_last_balance": 0,
+    "price_last_balance": 0.0,
     "check_depth_of_market": {
       "enabled": false,
       "bids_to_ask_delta": 0.8
@@ -38,7 +38,7 @@
     "price_side": "other",
     "use_order_book": true,
     "order_book_top": 1,
-    "price_last_balance": 0
+    "price_last_balance": 0.0
   },
   "order_types": {
     "entry": "limit",
@@ -148,11 +148,12 @@
     "password": "override-by-env-FREQTRADE__API_SERVER__PASSWORD"
   },
   "internals": {
-    "process_throttle_secs": 5,
+    "process_throttle_secs": 15,
     "heartbeat_interval": 60
   },
   "dataformat_ohlcv": "feather",
   "dataformat_trades": "feather",
   "logfile": "/workspace/logs/freqtrade-dryrun.log",
-  "db_url": "sqlite:////freqtrade/user_data/m3dsc-dryrun.sqlite"
+  "db_url": "sqlite:////freqtrade/user_data/m3dsc-dryrun.sqlite",
+  "_comment_pricing": "币安 USD-M 合约的 ticker 不提供价格, freqtrade 强制要求 use_order_book=true(否则启动即报 'Ticker pricing not available for Binance')。 因此限流治理改为降低决策频率: process_throttle_secs=15(原 5) 且各实验白名单更小。"
 }
