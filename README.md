@@ -47,8 +47,13 @@
 | 容器名 | 作用 | 端口 |
 |---|---|---|
 | `m3dsc-market-collector` | 币安合约 + 场外数据采集，产出时序库与候选池 | — |
-| `m3dsc-freqtrade-dryrun` | freqtrade 交易节点（dry-run），动态涨幅榜选币 | 127.0.0.1:18081 |
-| `m3dsc-dashboard` | 监控看板（候选池/持仓/资金费率/采集健康） | 127.0.0.1:18083 |
+| `m3dsc-freqtrade-dip` | **对照实验 B**：急跌反弹策略（M3DipRevert） | 127.0.0.1:18084 |
+| `m3dsc-freqtrade-dryrun` | **实验 A**：动量延续策略（M3GainersTrend），动态涨幅榜选币 | 127.0.0.1:18081 |
+| `m3dsc-dashboard` | 监控看板 + 动态候选池 API（RemotePairList 数据源） | 127.0.0.1:18083 |
+
+> **A/B 对照实验**：两个 dry-run 共用同一份数据与同一套风控内核（`stops_core`），
+> 只有入场逻辑不同，独立记账，用 `python3 scripts/dshc_compare.py` 并排对比。
+> 胜负判据只有一个：**期望值/笔 > 0 且盈亏比 > 1**。
 
 ---
 
@@ -232,3 +237,24 @@ freqtrade 2026.x 中 `pairlists[].method` 是**枚举白名单**校验的，用�
 ## 10. 变更记录
 
 见 `docs/CHANGELOG.md`。
+
+---
+
+## 11. A/B 对照实验与判据
+
+| 实验 | 容器 | 策略 | 假设 | 端口 |
+|---|---|---|---|---|
+| A | `m3dsc-freqtrade-dryrun` | M3GainersTrend | 动量在**延续区**(24h>=20%)继续 | 18081 |
+| B | `m3dsc-freqtrade-dip` | M3DipRevert | 急跌(15m<=-3.5%)后反弹 | 18084 |
+
+两点设计保证可比: ① 共用同一个采集器的数据与同一份候选池;
+② 共用同一套风控内核 `stops_core`(风险预算/距离钳制/风险上限), 只有入场逻辑不同。
+
+**唯一判据**: 期望值/笔 > 0 且 盈亏比 > 1。样本少于 20 笔时不下结论。
+
+```bash
+python3 scripts/dshc_compare.py --list   # 并排对比 A/B
+python3 scripts/dshc_trades.py           # A 的交易归因
+python3 scripts/dshc_excursion.py        # 止损是否太紧(MFE/MAE)
+python3 scripts/dshc_momentum.py         # 动量/跌幅的条件收益
+```
