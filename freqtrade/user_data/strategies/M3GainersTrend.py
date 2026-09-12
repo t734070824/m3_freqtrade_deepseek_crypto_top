@@ -456,7 +456,8 @@ class M3GainersTrend(IStrategy):
             | ((dataframe["close"] > dataframe["ema_fast"]) & (dataframe["close"].shift(1) <= dataframe["ema_fast"].shift(1)))
             | ((dataframe["macdhist"] > 0) & (dataframe["macdhist"].shift(1) <= 0))
         )
-        dataframe.loc[long_ok & trig_long, ["enter_long", "enter_tag"]] = (1, "m3_long")
+        sig_long = long_ok & trig_long
+        dataframe.loc[sig_long, ["enter_long", "enter_tag"]] = (1, "m3_long")
         if self.OBSERVE_ONLY:
             dataframe["enter_long"] = 0     # 观察模式: 只统计信号, 不下单
         if live_ann is not None and live_ann > self.FUNDING_MAX_LONG_ANN:
@@ -488,7 +489,8 @@ class M3GainersTrend(IStrategy):
             | ((dataframe["close"] < dataframe["ema_fast"]) & (dataframe["close"].shift(1) >= dataframe["ema_fast"].shift(1)))
             | ((dataframe["macdhist"] < 0) & (dataframe["macdhist"].shift(1) >= 0))
         )
-        dataframe.loc[short_ok & trig_short, ["enter_short", "enter_tag"]] = (1, "m3_short")
+        sig_short = short_ok & trig_short
+        dataframe.loc[sig_short, ["enter_short", "enter_tag"]] = (1, "m3_short")
 
         # ---------------- 空头(独立路径): 多头极端拥挤时的均值回归做空 ----------------
         # 动机: 涨幅榜的典型亏钱模式是「追高 -> 被高费率+拥挤度拖死」。在**多头极端拥挤**
@@ -509,7 +511,8 @@ class M3GainersTrend(IStrategy):
             | (dataframe["breakout_dn"])
             | ((dataframe["rsi"] < 50) & (dataframe["rsi"].shift(1) >= 50))        # RSI 下穿 50
         )
-        dataframe.loc[rev_ok & rev_trig, ["enter_short", "enter_tag"]] = (1, "m3_short_rev")
+        sig_rev = rev_ok & rev_trig
+        dataframe.loc[sig_rev, ["enter_short", "enter_tag"]] = (1, "m3_short_rev")
         if self.OBSERVE_ONLY:
             dataframe["enter_short"] = 0    # 观察模式: 只统计信号, 不下单
         if live_ann is not None and live_ann < self.FUNDING_MAX_SHORT_ANN:
@@ -521,10 +524,12 @@ class M3GainersTrend(IStrategy):
         dataframe.loc[fng < 15, "enter_short"] = 0
 
         # ---------- 信号率统计 + 入场漏斗诊断 ----------
-        n_long = int(dataframe["enter_long"].fillna(0).astype(bool).sum())
-        n_short = int(dataframe["enter_short"].fillna(0).astype(bool).sum())
+        # ⚠️ 观察模式下 dataframe 里的 enter_* 已被清零, 因此必须把「原始信号」单独传进去,
+        #    否则信号率统计恒为 0, 观察就失去意义(2026-09-12 修)。
+        n_long = int(sig_long.sum())
+        n_short = int((sig_short | sig_rev).sum())
         self._funnel_accum(pair, trend4, phase1, adx1, rsi5, rsi1, rsi4, ext1,
-                           liquid, pool, vol4_ok, dataframe)
+                           liquid, pool, vol4_ok, dataframe, sig_long, sig_short | sig_rev)
         if str(os.environ.get("M3_DEBUG_FUNNEL", "")) in ("1", "true") and (n_long or n_short):
             self._log_funnel(pair, dataframe, trend4, phase1, adx1, rsi5, rsi1, rsi4, ext1,
                              liquid, pool, vol4_ok)
@@ -557,7 +562,8 @@ class M3GainersTrend(IStrategy):
         return dataframe
 
     def _funnel_accum(self, pair: str, trend4, phase1, adx1, rsi5, rsi1, rsi4, ext1,
-                      liquid, pool, vol4_ok, dataframe: DataFrame) -> None:
+                      liquid, pool, vol4_ok, dataframe: DataFrame,
+                      sig_long: Any = None, sig_short: Any = None) -> None:
         """累积各道入场门槛的通过次数, 每 200 次评估汇总打印一次.
 
         诊断目的: 当信号过少时, 用数据定位到底是哪一道门槛在淘汰绝大多数候选,
@@ -567,8 +573,11 @@ class M3GainersTrend(IStrategy):
         row = dataframe.iloc[i]
         st = self._sig_stat
         st["pairs"] = st.get("pairs", 0) + 1
-        st["long"] = st.get("long", 0) + int(bool(row.get("enter_long")))
-        st["short"] = st.get("short", 0) + int(bool(row.get("enter_short")))
+        # 用传入的原始信号(观察模式下 df 里已被清零)
+        st["long"] = st.get("long", 0) + int(bool(sig_long.iloc[i]) if sig_long is not None
+                                             else bool(row.get("enter_long")))
+        st["short"] = st.get("short", 0) + int(bool(sig_short.iloc[i]) if sig_short is not None
+                                               else bool(row.get("enter_short")))
 
         gates = {
             "pool": bool(pool.iloc[i]),
