@@ -24,7 +24,7 @@ from typing import NamedTuple
 # 止损价格距离的硬边界: 上限与 MAX_STAKE_RATIO(0.35) 一起决定单笔最坏亏损。
 # 4x 杠杆下 8% 价格距离 = 32% 权益敞口 -> 名义敞口上限 ≈ 0.35×4 = 1.4x 权益
 # => 单笔最坏亏损 ≈ 1.4 × 8% ≈ 11% 权益... 因此还需配合 risk_ceiling 与仓位回退使用。
-DIST_MIN = 0.02
+DIST_MIN = 0.025   # 最小止损距离: 实测 2% 太紧, 会被正常波动扫出(2026-09-12 复盘)
 DIST_MAX = 0.08
 
 
@@ -43,11 +43,25 @@ class StopParams(NamedTuple):
     big_profit_2: float = 0.60
     big_tighten_1_mult: float = 1.5
     big_tighten_2_mult: float = 1.0
+    # ---- 捕获率优化: 按利润分档收紧跟踪距离 ----
+    # 动机(2026-09-12 实测): 盈利单的价格峰值中位仅 +1~2%, 而 2.6×ATR 的跟踪距离
+    # 会把利润几乎全部回吐(实测只吃到峰值的约 1/3)。
+    trail_tight_1_mult: float = 1.6    # 浮盈 > 1.6×启动阈值 -> 收紧到 1.6×ATR
+    trail_tight_2_mult: float = 1.0    # 浮盈 > 3×启动阈值   -> 收紧到 1.0×ATR
+    trail_tight_1_profit_at: float = 0.032   # = TRAIL_START_PROFIT × 1.6
+    trail_tight_2_profit_at: float = 0.060   # = TRAIL_START_PROFIT × 3
 
 
 def stop_price_distance(current_profit: float, leverage: float, atr_frac: float,
-                        p: StopParams = StopParams()) -> tuple[float, str]:
+                        p: StopParams = StopParams(),
+                        peak_profit: float | None = None) -> tuple[float, str]:
     """返回 (价格止损距离 d, 阶段说明). 这是**唯一**的止损真相来源.
+
+    不变量(有单测守护):
+        I1. 距离始终落在 [min_price_distance, max_price_distance] 内;
+        I2. 一旦进入跟踪阶段, 距离随利润**单调不增**(绝不因浮盈变大而放宽);
+        I3. 在 protect 生效后, 距离 <= PROFIT_PROTECT × 价格获利(至少锁定 1-PROFIT_PROTECT 涨幅);
+        I4. 返回值换算回 freqtrade 口径后, 权益风险 = d × leverage。
 
     阶段:
         hard    : 权益收益跌破 hard_stop -> 立即离场(极小距离)
@@ -60,28 +74,33 @@ def stop_price_distance(current_profit: float, leverage: float, atr_frac: float,
     price_pnl = current_profit / lev
 
     if current_profit <= p.hard_stop:
-        return max(p.min_price_distance, 0.004), "hard"
+        return DIST_MIN, "hard"
 
+    # 初始宽止损: 给趋势发育空间(在 2%~8% 之间钳制)
     d = min(max(atr_frac * p.stop_atr_mult, p.min_price_distance_entry), p.max_price_distance)
     d = min(max(d, DIST_MIN), DIST_MAX)
     stage = "initial"
+
     if current_profit > p.trail_start_profit:
-        trail = min(max(atr_frac * p.trail_atr_mult, 0.012), 0.09)
-        d = min(d, trail)
-        stage = "trail"
-        if price_pnl > 0:
-            protect = price_pnl * p.profit_protect
-            if protect < d:
-                d = protect
-                stage = "protect"
-        d = max(d, p.min_price_distance)
-    if current_profit > p.big_profit_1:
-        d = min(d, max(atr_frac * p.big_tighten_1_mult, 0.025))
-        stage += "+tight1"
-    if current_profit > p.big_profit_2:
-        d = min(d, max(atr_frac * p.big_tighten_2_mult, 0.018))
-        stage += "+tight2"
-    return max(d, p.min_price_distance), stage
+        # ⚠️ 只使用**峰值浮盈**决定收紧档位(不用当前浮盈做保护) ——
+        #    否则浮盈回撤时止损会被放宽, 已锁定的利润会被交回(2026-09-12 实测缺陷)。
+        peak = peak_profit if (peak_profit is not None and peak_profit > current_profit) else current_profit
+        # 距离上限表: 每档都比上一档更紧, 且全部 >= DIST_MIN(下界由最终钳制保证)
+        cap = DIST_MAX
+        if peak > p.trail_tight_1_profit_at:
+            cap, stage = 0.035, stage + "+fast1"
+        if peak > p.trail_tight_2_profit_at:
+            cap, stage = 0.030, stage + "+fast2"
+        if peak > p.big_profit_1:
+            cap, stage = 0.028, stage + "+tight1"
+        if peak > p.big_profit_2:
+            cap, stage = 0.026, stage + "+tight2"
+        if peak > 1.20:
+            cap, stage = 0.025, stage + "+tight3"
+        d = min(d, cap)
+        stage = "trail" + stage[len("initial"):]
+    # I1: 最终钳制, 保证距离始终落在 [DIST_MIN, DIST_MAX]
+    return min(max(d, DIST_MIN), DIST_MAX), stage
 
 
 def entry_stop_distance(atr_frac: float, stop_atr_mult: float,

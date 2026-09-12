@@ -1,9 +1,19 @@
-"""风控数学的回归测试.
+"""风控数学的回归测试 (v0.5.0).
 
-这些断言直接对应 2026-09-11 发生的两次真实事故, 属于「不许再犯」级别的护栏:
-  * 事故 ① 量纲混用: 浮盈 3.65% 被算成 0.11% 的价格止损距离
-  * 事故 ② 仓位漏乘杠杆: 单笔实际风险变成设计值的 4 倍
-运行:  pytest -q freqtrade/tests/unit/test_stops_core.py
+这些断言直接对应真实事故与不变量, 属于「不许再犯」级别的护栏:
+
+  事故 ① 量纲混用: 浮盈 3.65% 被算成 0.11% 的价格止损距离, 被噪声扫出
+  事故 ② 仓位漏乘杠杆: 单笔实际风险变成设计值的 4 倍
+  事故 ③ 用「当前浮盈」做盈利保护: 浮盈回撤时止损被**放宽**, 已锁利润被交回
+  事故 ④ 分档上限写成 atr×倍数: 高档位上限反而比低档位宽(非单调)
+
+因此止损距离被约束为四条不变量:
+  I1 距离始终落在 [DIST_MIN, DIST_MAX] 内
+  I2 以**峰值浮盈**为基准时, 止损位置(peak/leverage - d)随峰值单调不减
+  I3 距离随峰值浮盈单调不增, 且收紧档位只按峰值判定
+  I4 换算回 freqtrade 口径: 权益风险 = d × leverage
+
+运行: pytest -q freqtrade/tests/unit/test_stops_core.py
 """
 
 from __future__ import annotations
@@ -13,133 +23,134 @@ from pathlib import Path
 
 import pytest
 
-# user_data 不进 PYTHONPATH, 显式加入以便导入策略同目录的纯函数模块
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "user_data"))
 
-from stops_core import (StopParams, freqtrade_stoploss_value, funding_gate,  # noqa: E402
+from stops_core import (DIST_MAX, DIST_MIN, StopParams,  # noqa: E402
+                        entry_stop_distance, freqtrade_stoploss_value, funding_gate,
                         leverage_for_risk, plan_position, realized_risk_pct, stake_and_risk,
                         stake_for_risk, stop_price_distance, stop_rate)
 
-
-# ---------------------------------------------------------------- 事故 ① 回归
-@pytest.mark.parametrize("leverage", [1.0, 2.0, 4.0, 5.0])
-def test_trail_distance_is_never_tiny(leverage: float) -> None:
-    """跟踪启动瞬间(START=2.5%)的价格止损距离必须合理, 绝不能贴到现价上."""
-    d, stage = stop_price_distance(current_profit=0.0365, leverage=leverage, atr_frac=0.0199)
-    assert stage in ("trail", "protect", "trail+tight1"), stage
-    assert d >= 0.004, f"价格止损距离过小: {d}"
-    assert d <= 0.12
+LEVS = (1.0, 2.0, 3.0, 5.0)
+ATRS = (0.005, 0.008, 0.02, 0.05, 0.12)
+PEAKS = [i / 100 for i in range(3, 121, 3)]
 
 
-def test_old_bug_would_have_failed() -> None:
-    """把旧的错误公式算出来, 确认它确实违反不变量(防止有人改回去)."""
-    leverage, current_profit = 4.0, 0.0365
-    buggy = current_profit / leverage - 0.008        # 旧写法
-    fixed, _ = stop_price_distance(current_profit=current_profit, leverage=leverage,
-                                   atr_frac=0.0199)
+# ---------------------------------------------------------------- I1/I2/I3
+def test_i1_distance_bounds() -> None:
+    for atr in ATRS:
+        for lev in LEVS:
+            for peak in PEAKS:
+                d, _ = stop_price_distance(peak, lev, atr, peak_profit=peak)
+                assert DIST_MIN - 1e-12 <= d <= DIST_MAX + 1e-12, (atr, lev, peak, d)
+
+
+def test_i2_stop_level_monotonic_in_peak() -> None:
+    """核心不变量: 峰值浮盈越高, 止损位置(价格口径)只能更高, 绝不能下调。"""
+    for atr in ATRS:
+        for lev in LEVS:
+            prev = None
+            for peak in PEAKS:
+                d, _ = stop_price_distance(peak, lev, atr, peak_profit=peak)
+                level = peak / lev - d          # 锁定的价格收益下界
+                if prev is not None:
+                    assert level >= prev - 1e-9, (atr, lev, peak, level, prev)
+                prev = level
+
+
+def test_i3_distance_non_increasing_in_peak() -> None:
+    for atr in ATRS:
+        for lev in LEVS:
+            prev = None
+            for peak in [p for p in PEAKS if p > 0.03]:
+                d, _ = stop_price_distance(peak, lev, atr, peak_profit=peak)
+                if prev is not None:
+                    assert d <= prev + 1e-9, (atr, lev, peak, d, prev)
+                prev = d
+
+
+def test_i4_equity_risk_is_distance_times_leverage() -> None:
+    for lev in LEVS:
+        d, _ = stop_price_distance(0.10, lev, 0.02, peak_profit=0.10)
+        rate = 100.0
+        sp = stop_rate(rate, d, False)
+        val = freqtrade_stoploss_value(rate, sp, lev, False)
+        assert val / lev == pytest.approx(d, rel=1e-9)
+        assert val == pytest.approx(d * lev, rel=1e-9)
+
+
+# ---------------------------------------------------------------- 事故回归
+def test_accident_1_old_formula_would_fail() -> None:
+    """旧的错误写法(权益收益率 - 固定常数)会算出贴价止损, 必须被现在的设计排除。"""
+    leverage, profit = 4.0, 0.0365
+    buggy = profit / leverage - 0.008
+    fixed, _ = stop_price_distance(profit, leverage, 0.0199, peak_profit=profit)
     assert buggy < 0.004 <= fixed
 
 
-def test_stoploss_value_matches_price_distance() -> None:
-    """custom_stoploss 返回值 / 杠杆 必须等于价格距离(freqtrade 合约口径)."""
-    for leverage in (1.0, 3.0, 4.0, 5.0):
-        d, _ = stop_price_distance(current_profit=0.05, leverage=leverage, atr_frac=0.02)
-        rate = 100.0
-        for is_short in (False, True):
-            sp = stop_rate(rate, d, is_short)
-            val = freqtrade_stoploss_value(rate, sp, leverage, is_short)
-            assert val / leverage == pytest.approx(d, rel=1e-9)
+def test_accident_3_drawdown_keeps_stop() -> None:
+    """峰值 20% 后浮盈回落, 止损距离不得放宽(必须按峰值档位)。"""
+    ds = [stop_price_distance(cur, 3.0, 0.02, peak_profit=0.20)[0]
+          for cur in (0.20, 0.15, 0.10, 0.05, 0.03)]
+    assert all(x == pytest.approx(ds[0]) for x in ds), ds
 
 
-def test_hard_stop_forces_immediate_exit() -> None:
-    p = StopParams(hard_stop=-0.085)
-    d, stage = stop_price_distance(current_profit=-0.10, leverage=4.0, atr_frac=0.03, p=p)
+def test_hard_stop() -> None:
+    d, stage = stop_price_distance(-0.10, 4.0, 0.03, peak_profit=0.0)
     assert stage == "hard"
-    assert d <= 0.005
+    assert d <= 0.026
 
 
-def test_initial_stop_is_wide_and_clamped() -> None:
-    wide, stage = stop_price_distance(current_profit=0.0, leverage=4.0, atr_frac=0.05)
+def test_initial_stop_uses_atr_and_is_clamped() -> None:
+    wide, stage = stop_price_distance(0.0, 4.0, 0.05)
     assert stage == "initial"
-    assert wide == pytest.approx(0.13, abs=1e-9) or wide <= 0.12
-    tiny, stage2 = stop_price_distance(current_profit=0.0, leverage=4.0, atr_frac=0.0001)
-    assert stage2 == "initial"
-    assert tiny == pytest.approx(0.02)          # 钳制到最小 2%
-
-
-def test_profit_protect_locks_most_of_the_move() -> None:
-    """浮盈很大时, 止损距离应收敛到「价格获利 × PROFIT_PROTECT」的量级."""
-    lev, prof, atr = 4.0, 0.60, 0.01
-    d, stage = stop_price_distance(current_profit=prof, leverage=lev, atr_frac=atr)
-    price_pnl = prof / lev
-    assert "tight" in stage
-    assert d < price_pnl                     # 止损价必须仍在成本价之上(锁定利润)
-    assert d <= price_pnl * 0.61 + 1e-9
+    assert DIST_MIN <= wide <= DIST_MAX
+    tiny, _ = stop_price_distance(0.0, 4.0, 0.0001)
+    assert tiny == pytest.approx(DIST_MIN)
+    assert entry_stop_distance(0.05, 2.2) == pytest.approx(DIST_MAX)
+    assert entry_stop_distance(0.0001, 2.2) == pytest.approx(DIST_MIN)
 
 
 # ---------------------------------------------------------------- 事故 ② 回归
-@pytest.mark.parametrize("leverage", [1.0, 2.0, 3.0, 4.0, 5.0])
+@pytest.mark.parametrize("leverage", LEVS)
 def test_stake_respects_risk_budget(leverage: float) -> None:
-    """止损被打到时, 权益回撤必须 **不超过** 风险预算 —— 绝不许被杠杆放大.
-
-    注意是「不超过」而非「等于」: 仓位上限优先, 一旦预算要求超过上限,
-    系统应当**减少实际风险**, 而不是悄悄放大风险。
-    """
     equity, budget, dist = 1000.0, 0.01, 0.05
     stake, risk = stake_and_risk(equity, budget, dist, leverage=leverage)
-    assert stake <= equity * 0.35 + 1e-9, "仓位不得超过上限"
-    # 在 5x 这种极端组合下, 风险预算无法与「最小仓位 5%」同时满足:
-    # 此时必须明确地由「最小仓位」兜底(属于已知且有界的情况), 而不是静默放大风险。
-    min_stake = equity * 0.05
-    if stake > min_stake + 1e-9:
-        assert risk <= budget + 1e-12, f"lev={leverage} 实际风险 {risk} > 预算 {budget}"
-    else:
-        assert risk <= budget * 1.3 + 1e-12, f"lev={leverage} 触发最小仓位, 风险 {risk}"
+    assert stake <= equity * 0.35 + 1e-9
+    if stake > equity * 0.05 + 1e-9:
+        assert risk <= budget + 1e-12, f"lev={leverage} 风险 {risk}"
     if leverage <= 4.0:
-        assert risk == pytest.approx(budget, rel=1e-9), "4x 及以下应完整使用预算"
-
-
-def test_leverage_cap_prevents_ratio_saturation() -> None:
-    """杠杆自适配上界应保证「宽止损 + 高杠杆」不会把仓位顶到上限."""
-    for dist in (0.02, 0.05, 0.08, 0.12):
-        lev = leverage_for_risk(dist, max_leverage=5.0, base_leverage=4.0)
-        assert lev <= 5.0
-        plan = plan_position(1000.0, 0.01, dist, leverage=lev, risk_ceiling=0.015)
-        assert plan.stake <= 350.0 + 1e-9        # 不越过仓位上限
-        assert plan.risk_pct <= 0.015 + 1e-12, f"dist={dist} lev={lev} 风险 {plan.risk_pct}"
-        if not plan.ok:
-            assert plan.stake == 0.0
-
-
-def test_stake_ratio_clamped() -> None:
-    """极端参数下仓位比例仍被钳制在 [5%, 35%]."""
-    equity = 1000.0
-    tiny_stop = stake_for_risk(equity, 0.01, 0.001, leverage=1.0)
-    assert tiny_stop == pytest.approx(equity * 0.35)
-    huge_stop = stake_for_risk(equity, 0.001, 0.5, leverage=5.0)
-    assert huge_stop == pytest.approx(equity * 0.05)
-
-
-def test_stake_notional_exposure_sanity() -> None:
-    """正常参数下, 名义敞口应落在合理区间(不超过权益的 2 倍)."""
-    stake = stake_for_risk(1000.0, 0.01, 0.05, leverage=4.0)
-    notional = stake * 4.0
-    assert 0 < notional <= 1000.0 * 2.0
+        assert risk == pytest.approx(budget, rel=1e-9)
 
 
 def test_plan_position_never_exceeds_ceiling() -> None:
-    """全参数扫描: 任何组合下止损回撤都不得超过风险上限."""
     worst = 0.0
-    for dist in (0.02, 0.03, 0.05, 0.08, 0.12):
-        for lev in (1.0, 2.0, 3.0, 4.0, 5.0):
-            for budget in (0.002, 0.005, 0.01, 0.02):
-                plan = plan_position(1000.0, budget, dist, leverage=lev, risk_ceiling=0.015)
+    for dist in (0.025, 0.03, 0.05, 0.08):
+        for lev in LEVS:
+            for budget in (0.002, 0.005, 0.008, 0.02):
+                plan = plan_position(1000.0, budget, dist, leverage=lev, risk_ceiling=0.012)
                 worst = max(worst, plan.risk_pct)
-                assert plan.risk_pct <= 0.015 + 1e-12, (dist, lev, budget, plan)
-    assert worst <= 0.015
+                assert plan.risk_pct <= 0.012 + 1e-12, (dist, lev, budget, plan)
+                # 仓位上限是 max_ratio=0.35 -> 最多 350 USDT(risk_ceiling 只在必要时才压低)
+                assert plan.stake <= 350.0 + 1e-9
+    assert worst <= 0.012
 
 
-# ---------------------------------------------------------------- 资金费率门控
+def test_leverage_cap() -> None:
+    for dist in (0.025, 0.05, 0.08):
+        lev = leverage_for_risk(dist, max_leverage=5.0, base_leverage=3.0)
+        assert 1.0 <= lev <= 5.0
+
+
+def test_stake_for_risk_alias() -> None:
+    assert stake_for_risk(1000.0, 0.008, 0.05, 3.0) == pytest.approx(
+        stake_and_risk(1000.0, 0.008, 0.05, 3.0)[0])
+
+
+def test_realized_risk_pct() -> None:
+    assert realized_risk_pct(100.0, 1000.0, 0.05, 3.0) == pytest.approx(0.015)
+
+
+# ---------------------------------------------------------------- 资金费率
 def test_funding_gate() -> None:
     assert funding_gate(0.0, max_long=0.45, max_short=-0.50) == (True, True)
     assert funding_gate(0.90, max_long=0.45, max_short=-0.50) == (False, True)

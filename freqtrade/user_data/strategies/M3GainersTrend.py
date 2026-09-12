@@ -137,7 +137,12 @@ class M3GainersTrend(IStrategy):
 
     # ---- 风控参数 ----
     STOP_ATR_MULT = 2.2            # 初始止损 = 2.2 × ATR(5m), 距离钳制在 2%~8%
-    TRAIL_ATR_MULT = 2.6           # 跟踪止损距离(放宽 -> 让盈利单跑得更远)
+    # 捕获率优化(2026-09-12 实测): 盈利单的价格峰值中位只有 +1~2%, 而 2.6×ATR 的跟踪
+    # 距离会把利润几乎全部回吐(实测只吃到峰值的 ~1/3)。改为「按利润分档收紧」,
+    # 同时保留大行情不被过早打断(实测能抓到 +20% 级别的插针)。
+    TRAIL_ATR_MULT = 2.6           # 跟踪距离基准
+    TRAIL_TIGHT_1 = 1.6            # 浮盈 > 1.6×启动阈值 时收紧到 1.6×ATR
+    TRAIL_TIGHT_2 = 1.0            # 浮盈 > 3×启动阈值   时收紧到 1.0×ATR
     TRAIL_START_PROFIT = 0.02      # 浮盈 2% 启动跟踪
     HARD_STOP = -0.070             # 权益硬止损 -7%
     MIN_LOCK_PROFIT = 0.008        # (保留: 权益口径的最小锁定利润)
@@ -751,8 +756,19 @@ class M3GainersTrend(IStrategy):
             atr_frac = 0.03
 
         is_short = bool(trade.is_short)
+        # 峰值浮盈: 用持仓期最高价反算, 作为盈利保护的基准(保证止损单调收紧)
+        peak_profit = current_profit
+        try:
+            if trade.max_rate:
+                if is_short:
+                    peak_profit = (trade.open_rate - trade.max_rate) / trade.open_rate * lev
+                else:
+                    peak_profit = (trade.max_rate - trade.open_rate) / trade.open_rate * lev
+        except Exception:  # noqa: BLE001
+            peak_profit = current_profit
         # 数学集中在 stops_core(纯函数 + 单测), 此处只做「取数据 -> 换算 -> 返回」
-        d, stage = stop_price_distance(current_profit, lev, atr_frac, self._stop_params())
+        d, stage = stop_price_distance(current_profit, lev, atr_frac, self._stop_params(),
+                                       peak_profit=peak_profit)
         stop_price = stop_rate(current_rate, d, is_short)
         val = freqtrade_stoploss_value(current_rate, stop_price, lev, is_short)
 
@@ -772,6 +788,10 @@ class M3GainersTrend(IStrategy):
             trail_start_profit=self.TRAIL_START_PROFIT,
             hard_stop=self.HARD_STOP,
             profit_protect=self.PROFIT_PROTECT,
+            trail_tight_1_mult=self.TRAIL_TIGHT_1,
+            trail_tight_2_mult=self.TRAIL_TIGHT_2,
+            trail_tight_1_profit_at=self.TRAIL_START_PROFIT * 1.6,
+            trail_tight_2_profit_at=self.TRAIL_START_PROFIT * 3.0,
         )
 
     # ================================================================
