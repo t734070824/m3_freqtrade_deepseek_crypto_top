@@ -22,12 +22,13 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# paused=True 表示该实验已按归因结论停用(容器已 stop), 对比时只展示历史结论, 不参与裁决
 BOTS = [
-    ("A 追涨 M3GainersTrend", "DSHC_FT_API_PORT", 18081),
-    ("B 反弹 M3DipRevert", "DSHC_DIP_API_PORT", 18084),
-    ("C Carry M3CarryLong", "DSHC_CARRY_API_PORT", 18085),
-    ("D 突破 M3VolBreakout", "DSHC_VOL_API_PORT", 18086),
-    ("E 费率空 M3FundingShort", "DSHC_FSHORT_API_PORT", 18087),
+    ("A 追涨 M3GainersTrend", "DSHC_FT_API_PORT", 18081, True),
+    ("B 反弹 M3DipRevert", "DSHC_DIP_API_PORT", 18084, False),
+    ("C Carry M3CarryLong", "DSHC_CARRY_API_PORT", 18085, False),
+    ("D 突破 M3VolBreakout", "DSHC_VOL_API_PORT", 18086, False),
+    ("E 费率空 M3FundingShort", "DSHC_FSHORT_API_PORT", 18087, False),
 ]
 
 
@@ -93,12 +94,17 @@ def main() -> int:
     print("M3-DSH 多实验对比 (A 追涨 / B 反弹 / C Carry / D 突破 / E 费率空)")
     print("=" * 96)
     results = {}
-    for name, envkey, default in BOTS:
+    paused: list[str] = []
+    for name, envkey, default, is_paused in BOTS:
         port = int(os.environ.get(envkey) or e.get(envkey) or default)
         prof = fetch(port, "/api/v1/profit", e)
         tr = fetch(port, "/api/v1/trades?limit=1000", e)
         if "__error__" in prof:
-            print("\n%-24s [不可用] %s" % (name, prof["__error__"][:50]))
+            if is_paused:
+                paused.append(name)
+                print("\n%-26s [已停用] 按归因结论停止, 历史结论见 logs/ALERTS.md" % name)
+            else:
+                print("\n%-26s [不可用] %s" % (name, prof["__error__"][:50]))
             continue
         trades = tr.get("trades", tr) if isinstance(tr, dict) else tr
         s = stats(trades or [])
@@ -114,6 +120,9 @@ def main() -> int:
     print("\n" + "=" * 96)
     print("裁决(唯一判据: 期望值/笔 > 0 且 盈亏比 > 1; 样本 < 20 笔不下结论)")
     print("=" * 96)
+    if paused:
+        print("  (已停用实验: %s —— 容器已 stop, 需要时用 "
+              "docker compose --env-file .env up -d m3dsc-freqtrade-dryrun 恢复)" % ", ".join(paused))
     ranking = sorted(results.items(), key=lambda kv: -kv[1][0]["expectancy"])
     for name, (s, _) in ranking:
         ok = s["expectancy"] > 0 and (s["avg_loss"] == 0 or abs(s["avg_win"] / s["avg_loss"]) > 1)
