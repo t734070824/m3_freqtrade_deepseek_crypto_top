@@ -159,6 +159,12 @@ class M3GainersTrend(IStrategy):
     SHORT_REV_RSI4 = 82.0          # 4h RSI 超买
     MIN_STICK = 0.25               # 最低榜单稳定性(过滤脉冲票; 0 = 尚未统计到, 放行)
 
+    # ⚠️ 观察模式(2026-09-12 由归因守护判定后开启):
+    #   本策略在 69 笔真实样本上被判定为**负期望**(期望 -1.143 USDT/笔, 盈亏比 0.30, PF 0.61)。
+    #   因此停止开新仓, 但保留信号计算与漏斗统计 —— 既能避免继续亏损,
+    #   又能继续产出「如果开仓会怎样」的对照数据。恢复只需改回 False。
+    OBSERVE_ONLY = True
+
     # ---- 动量甜区门槛 (2026-09-12 用 28 万条分钟样本实测) ----
     # 实测「24h 涨幅 -> 未来 60 分钟收益」的关系是非单调的:
     #   3~10%  -> -0.013% (胜率 48.6%)
@@ -215,6 +221,9 @@ class M3GainersTrend(IStrategy):
         # 用于检验「止损触发时权益回撤 <= 风险预算」这一不变量在实盘中是否真的成立。
         self._diag: dict[str, dict[str, float]] = {}
         log.info("[M3] 策略启动. 数据目录=%s, watchlist=%s", DATA_DIR, WATCHLIST_PATH)
+        if self.OBSERVE_ONLY:
+            log.warning("[M3] ⚠️ 观察模式已开启(不再开新仓): 本策略在 69 笔样本上期望为负 "
+                        "(-1.143 USDT/笔, 盈亏比 0.30)。信号仍会计算并用于对照分析。")
         log.info("[M3] 风控参数: 初始止损=%.1f×ATR(距离钳制%.0f%%~%.0f%%) 跟踪=%.1f×ATR "
                  "跟踪启动浮盈=%.1f%% 硬止损=%.1f%% 分批收割=+%.0f%%/每档%.0f%% "
                  "单笔风险预算=%.1f%% 上限=%.1f%% 杠杆=%.1fx 费率上限 多%.0f%% 空%.0f%% 冷却=%d分钟 "
@@ -448,6 +457,8 @@ class M3GainersTrend(IStrategy):
             | ((dataframe["macdhist"] > 0) & (dataframe["macdhist"].shift(1) <= 0))
         )
         dataframe.loc[long_ok & trig_long, ["enter_long", "enter_tag"]] = (1, "m3_long")
+        if self.OBSERVE_ONLY:
+            dataframe["enter_long"] = 0     # 观察模式: 只统计信号, 不下单
         if live_ann is not None and live_ann > self.FUNDING_MAX_LONG_ANN:
             dataframe["enter_long"] = 0
 
@@ -499,6 +510,8 @@ class M3GainersTrend(IStrategy):
             | ((dataframe["rsi"] < 50) & (dataframe["rsi"].shift(1) >= 50))        # RSI 下穿 50
         )
         dataframe.loc[rev_ok & rev_trig, ["enter_short", "enter_tag"]] = (1, "m3_short_rev")
+        if self.OBSERVE_ONLY:
+            dataframe["enter_short"] = 0    # 观察模式: 只统计信号, 不下单
         if live_ann is not None and live_ann < self.FUNDING_MAX_SHORT_ANN:
             dataframe["enter_short"] = 0
 
