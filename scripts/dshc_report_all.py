@@ -80,15 +80,18 @@ def sh(cmd: list[str], timeout: int = 25) -> str:
 
 
 def container_info(name: str) -> dict:
+    # 注意: docker inspect 对多行模板会重复输出, 因此分别取值更稳
     out = sh(["docker", "inspect", "-f",
-              "{{.State.Status}}|{{.State.StartedAt}}|{{.RestartCount}}", name])
-    parts = (out.strip().splitlines() or [""])[0].split("|")
+              "{{.State.Status}}~{{.RestartCount}}~{{.State.StartedAt}}", name])
+    parts = (out.strip().splitlines() or [""])[0].split("~")
     status = parts[0] if parts else "missing"
-    started = parts[1] if len(parts) > 1 else ""
-    restarts = parts[2] if len(parts) > 2 else "0"
+    restarts = parts[1] if len(parts) > 1 else "0"
+    started = parts[2] if len(parts) > 2 else ""
     uptime = ""
     try:
-        dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+        # Docker 的 StartedAt 有 9 位纳秒, Python 3.10 的 fromisoformat 只吃 6 位 -> 截断
+        started = re.sub(r"(\.\d{6})\d+", r"\1", started.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(started)
         secs = (datetime.now(timezone.utc) - dt).total_seconds()
         h, m = divmod(int(secs) // 60, 60)
         uptime = f"{h}h{m:02d}m" if h else f"{m}m"
