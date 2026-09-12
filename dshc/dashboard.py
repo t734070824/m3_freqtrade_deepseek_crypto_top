@@ -310,7 +310,16 @@ def api_summary() -> Response:
     return jsonify(out)
 
 
-_PAIRLIST_CACHE: dict[str, Any] = {"ms": 0, "doc": None}
+_PAIRLIST_CACHE: dict[str, Any] = {"ms": 0, "doc": None, "pairs": []}
+
+# 候选池更新迟滞参数。
+# ⚠️ 为什么需要(2026-09-12 实测): 打分每分钟都在变, 若每次都把全新排序返回给 freqtrade,
+#    白名单会持续抖动; 每出现一个新交易对, freqtrade 都要重新拉取启动历史 K 线,
+#    在 5m+1h 两个周期上 × 数十个交易对 → 直接打爆币安「每 IP 2400 weight/min」配额(429)。
+#    因此这里加迟滞: 至少间隔 PAIRLIST_MIN_INTERVAL_S 秒, 且变化幅度超过
+#    PAIRLIST_MAX_CHURN 才真正换池; 同时把名额填满以尽量保持集合稳定。
+PAIRLIST_MIN_INTERVAL_S = 600      # 最短 10 分钟才允许换池
+PAIRLIST_MAX_CHURN = 0.20          # 变动超过 20% 才换池
 
 # 与 dshc/binance.py::NON_TRADABLE_BASES 保持一致(看板为独立文件, 避免相互导入)
 _NON_TRADABLE_BASES = {
@@ -329,7 +338,7 @@ def api_pairlist() -> Response:
     """
     now = utc_ms()
     doc = _PAIRLIST_CACHE.get("doc")
-    if doc is None or now - int(_PAIRLIST_CACHE.get("ms", 0)) > 60_000:
+    if doc is None or now - int(_PAIRLIST_CACHE.get("ms", 0)) > PAIRLIST_MIN_INTERVAL_S * 1000:
         # 严格只输出 USDT 计价的合约, 且数量受 DSHC_TOP_N 限制
         # (曾因输出全部候选导致 freqtrade whitelist 膨胀到 55+, 加剧交易所限流)
         try:
@@ -354,8 +363,19 @@ def api_pairlist() -> Response:
             log.warning("读取候选池失败: %s", exc)
         if not pairs:
             pairs = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
-        doc = {"pairs": pairs, "refresh_period": 60}
-        _PAIRLIST_CACHE.update({"ms": now, "doc": doc})
+        # ---- 迟滞: 变动幅度不足或距上次换池太近时, 沿用旧池 ----
+        prev = list(_PAIRLIST_CACHE.get("pairs") or [])
+        if prev:
+            changed = len(set(pairs) ^ set(prev)) / max(len(set(prev)), 1)
+            if changed < PAIRLIST_MAX_CHURN:
+                pairs = prev                     # 变化不大 -> 保持稳定, 避免 K 线重拉
+            else:
+                # 变化较大: 保留仍然合格的旧成员在前, 新成员补位(减少同时换掉的数量)
+                keep = [p for p in prev if p in pairs]
+                add = [p for p in pairs if p not in keep]
+                pairs = (keep + add)[:top_n]
+        doc = {"pairs": pairs, "refresh_period": PAIRLIST_MIN_INTERVAL_S}
+        _PAIRLIST_CACHE.update({"ms": now, "doc": doc, "pairs": pairs})
     return Response(json.dumps(doc, ensure_ascii=False), mimetype="application/json")
 
 
