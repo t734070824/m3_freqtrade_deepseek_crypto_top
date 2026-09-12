@@ -354,9 +354,11 @@ def _stickiness(st: dict[str, float] | None) -> float:
     """把稳定性特征压成 [-1, 1] 的因子: 越长、名次越靠前 -> 越大."""
     if not st:
         return 0.0
-    run = min(st.get("max_run_min", 0.0) / 180.0, 1.0)      # 连续在榜 3 小时为满
-    cover = min(st.get("pct_in_top", 0.0) / 60.0, 1.0)      # 6 小时内 60% 时间在榜为满
-    rank = 1.0 - min(max((st.get("mean_rank", 15.0) - 1.0) / 14.0, 0.0), 1.0)
+    # 标定说明: 连续 60 分钟 / 覆盖 60% / 名次前 3 即视为「满值」。
+    # 早期把连续时长满值设为 180 分钟, 在冷启动阶段(样本 < 1 小时)会让因子恒为 0, 失去作用。
+    run = min(st.get("max_run_min", 0.0) / 60.0, 1.0)
+    cover = min(st.get("pct_in_top", 0.0) / 60.0, 1.0)
+    rank = 1.0 - min(max((st.get("mean_rank", 15.0) - 1.0) / 10.0, 0.0), 1.0)
     return max(-1.0, min(1.0, 0.45 * run + 0.30 * cover + 0.25 * rank))
 
 
@@ -414,7 +416,7 @@ def build_candidates(conn: sqlite3.Connection, *, top_n: int = 40,
         s, parts = score_candidate(c, weights, macro)
         # 稳定性因子: 只在「有真实霸榜历史」时加分(避免冷启动噪声)
         st = stab.get(sym)
-        if st and st.get("n", 0) >= 6:
+        if st and st.get("n", 0) >= 3:      # 至少 3 个采样点(约 15 分钟)才启用稳定性因子
             stick = _stickiness(st)
             w = (weights or DEFAULT_WEIGHTS).get("stick", DEFAULT_WEIGHTS["stick"])
             parts["stick"] = round(w * stick, 4)
