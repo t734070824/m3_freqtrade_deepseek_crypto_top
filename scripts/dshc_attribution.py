@@ -44,8 +44,10 @@ JSONL = ROOT / "logs" / "attribution.jsonl"
 ALERTS = ROOT / "logs" / "ALERTS.md"
 STATE = ROOT / "logs" / ".attribution_state.json"
 
+# 实验 A(追涨)已按归因结论停用(69 笔负期望), 其档位由 F 接管;
+# A 的最终结论保留在 docs/CHANGELOG.md 与 logs/ALERTS.md 中, 不再参与轮询。
 BOTS = [
-    ("A", "追涨 M3GainersTrend", "m3dsc-freqtrade-dryrun", "DSHC_FT_API_PORT", 18081),
+    ("F", "负费率+急跌 M3CarryDip", "m3dsc-freqtrade-f", "DSHC_F_API_PORT", 18081),
     ("B", "反弹 M3DipRevert", "m3dsc-freqtrade-dip", "DSHC_DIP_API_PORT", 18084),
     ("C", "Carry M3CarryLong", "m3dsc-freqtrade-carry", "DSHC_CARRY_API_PORT", 18085),
     ("D", "突破 M3VolBreakout", "m3dsc-freqtrade-vol", "DSHC_VOL_API_PORT", 18086),

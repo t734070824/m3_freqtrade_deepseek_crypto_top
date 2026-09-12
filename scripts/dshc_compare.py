@@ -23,8 +23,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 # paused=True 表示该实验已按归因结论停用(容器已 stop), 对比时只展示历史结论, 不参与裁决
+# 实验 A(m3dsc-freqtrade-dryrun) 已停用: 69 笔判定负期望(期望 -1.143, 盈亏比 0.30),
+# 其运行档位由实验 F(M3CarryDip) 接管, 但 A 的固定结论记录在 docs/CHANGELOG.md 与 logs/ALERTS.md。
+A_HISTORY = True    # 实验 A 的历史结论(已停用, 不参与裁决)
+
 BOTS = [
-    ("A 追涨 M3GainersTrend", "DSHC_FT_API_PORT", 18081, True),
+    ("F 负费率+急跌 M3CarryDip", "DSHC_F_API_PORT", 18081, False),
     ("B 反弹 M3DipRevert", "DSHC_DIP_API_PORT", 18084, False),
     ("C Carry M3CarryLong", "DSHC_CARRY_API_PORT", 18085, False),
     ("D 突破 M3VolBreakout", "DSHC_VOL_API_PORT", 18086, False),
@@ -91,7 +95,9 @@ def main() -> int:
     e = env()
 
     print("=" * 96)
-    print("M3-DSH 多实验对比 (A 追涨 / B 反弹 / C Carry / D 突破 / E 费率空)")
+    print("M3-DSH 多实验对比 (F 负费率+急跌 / B 反弹 / C Carry / D 突破 / E 费率空)")
+    if A_HISTORY:
+        print("  注: 实验 A 追涨已停用 — 69 笔判定负期望(期望 -1.143/笔, 盈亏比 0.30, 累计 -87.55)")
     print("=" * 96)
     results = {}
     paused: list[str] = []

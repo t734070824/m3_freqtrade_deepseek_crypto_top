@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # M3-DSH 多实验持续计量: 每 N 秒把各 dry-run 的账户/持仓/采集健康写入 logs/monitor.log
 #
-#   A 追涨   m3dsc-freqtrade-dryrun  M3GainersTrend   动量延续(甜区)      :18081
+#   F 负费率+急跌 m3dsc-freqtrade-f  M3CarryDip       负费率 Carry+急跌反弹 :18081
 #   B 反弹   m3dsc-freqtrade-dip     M3DipRevert      急跌反弹            :18084
 #   C Carry  m3dsc-freqtrade-carry   M3CarryLong      负费率长持          :18085
 #   D 突破   m3dsc-freqtrade-vol     M3VolBreakout    波动压缩放量突破     :18086
@@ -13,7 +13,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/dshc-env.sh"
 INTERVAL="${1:-300}"
 LOG="$DSHC_LOG_DIR/monitor.log"
 AUTH="${DSHC_FT_API_USER:-m3dsc}:${DSHC_FT_API_PASS}"
-P_A="${DSHC_FT_API_PORT:-18081}"
+P_A="${DSHC_F_API_PORT:-18081}"
 P_B="${DSHC_DIP_API_PORT:-18084}"
 P_C="${DSHC_CARRY_API_PORT:-18085}"
 P_D="${DSHC_VOL_API_PORT:-18086}"
@@ -40,7 +40,7 @@ def load(p, d):
         return json.load(open(p))
     except Exception:
         return d
-labels = [("A 追涨 ", sys.argv[2], sys.argv[3]), ("B 反弹 ", sys.argv[4], sys.argv[5]),
+labels = [("F 负费率 ", sys.argv[2], sys.argv[3]), ("B 反弹 ", sys.argv[4], sys.argv[5]),
           ("C Carry", sys.argv[6], sys.argv[7]), ("D 突破 ", sys.argv[8], sys.argv[9]),
           ("E 费率空", sys.argv[10], sys.argv[11])]
 out = []
@@ -64,7 +64,7 @@ except Exception:
 print("\n".join(out), flush=True)
 PYEOF
 
-  for c in freqtrade-dryrun freqtrade-dip freqtrade-carry freqtrade-vol freqtrade-fshort; do
+  for c in freqtrade-f freqtrade-dip freqtrade-carry freqtrade-vol freqtrade-fshort; do
     N429=$(docker logs --since "${INTERVAL}s" "${DSHC_PREFIX}-$c" 2>&1 | grep -c '429' || true)
     [[ "${N429:-0}" -gt 0 ]] && echo "      [告警] $c 429 x$N429" >> "$LOG"
   done
