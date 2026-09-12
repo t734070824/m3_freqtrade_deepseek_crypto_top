@@ -214,9 +214,13 @@ class M3FundingShort(IStrategy):
         acc = st.setdefault("g", {})
         for k, v in gates.items():
             acc[k] = acc.get(k, 0) + int(bool(v))
+        # 额外统计「正费率」与「费率极值」两项单独达标次数, 用于区分:
+        #   a) 市场根本没有正费率标的(等待合理)  b) 有正费率但不够极端(门槛可调)
+        st["pos_n"] = st.get("pos_n", 0) + int(bool(positive.iloc[i]))
+        st["ext_n"] = st.get("ext_n", 0) + int(bool(extreme.iloc[i]))
         if st["n"] % 100 == 0:
-            pool = max(st.get("pool_n", 0), 1)
-            log.info("[FSHORT] 评估 %d 次, 信号 %d 次 | 门槛通过率: %s", st["n"], st["sig"],
+            log.info("[FSHORT] 评估 %d 次(池内 %d), 信号 %d 次 | 正费率 %d 次, 费率极值 %d 次 | %s",
+                     st["n"], st.get("pool_n", 0), st["sig"], st["pos_n"], st["ext_n"],
                      "  ".join("%s=%.0f%%" % (k, acc.get(k, 0) / st["n"] * 100) for k in gates))
         if gates["pool"]:
             st["pool_n"] = st.get("pool_n", 0) + 1

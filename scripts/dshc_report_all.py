@@ -140,9 +140,12 @@ def main() -> int:
                                                    ci["restarts"], ci["cpu"], ci["mem"]))
 
     # ---------------- 2. 账本 ----------------
-    print("\n【2】各实验账本(判据: 期望值/笔 > 0 且 盈亏比 > 1, 样本 < 20 笔不下结论)")
-    print("  %-4s %-22s %8s %6s %6s %7s %8s %8s %7s %8s %9s" % (
-        "ID", "策略", "权益", "平仓", "持仓", "胜率%", "均盈", "均亏", "盈亏比", "期望/笔", "资金费"))
+    print("\n【2】各实验账本")
+    print("     判据只用「已平仓(已实现)」: 期望值/笔 > 0 且 盈亏比 > 1, 样本 < 20 笔不下结论")
+    print("     ⚠️ 总权益含浮动盈亏, 会与已实现结论反向 —— 必须分开看(2026-09-13 因此差点误判)")
+    print("  %-4s %-22s %9s %9s %9s %6s %6s %7s %8s %7s %8s %9s" % (
+        "ID", "策略", "总权益", "已实现", "浮动", "平仓", "持仓", "胜率%", "均盈", "均亏",
+        "期望/笔", "资金费"))
     results = {}
     for code, label, container, envkey, default_port in BOTS:
         port = int(os.environ.get(envkey) or e.get(envkey) or default_port)
@@ -168,10 +171,13 @@ def main() -> int:
                          "gp_gl": ratio, "exp": exp, "funding": funding, "trades": trades}
         rr = (abs(results[code]["avg_win"] / results[code]["avg_loss"])
               if results[code]["avg_loss"] else float("inf"))
-        print("  %-4s %-22s %+8.2f %6d %6d %7.1f %+8.2f %+8.2f %7.2f %+8.3f %+9.4f" % (
-            code, label, results[code]["equity"], results[code]["closed"],
-            results[code]["open"], results[code]["winrate"], results[code]["avg_win"],
-            results[code]["avg_loss"], rr, exp, funding))
+        realized = sum(ps)
+        results[code]["realized"] = realized
+        results[code]["floating"] = results[code]["equity"] - realized
+        print("  %-4s %-22s %+9.2f %+9.2f %+9.2f %6d %6d %7.1f %+8.2f %+8.2f %+8.3f %+9.4f" % (
+            code, label, results[code]["equity"], realized, results[code]["floating"],
+            results[code]["closed"], results[code]["open"], results[code]["winrate"],
+            results[code]["avg_win"], results[code]["avg_loss"], exp, funding))
 
     # ---------------- 3. 持仓 ----------------
     print("\n【2b】已停用的实验(保留历史结论, 不参与实时统计)")
