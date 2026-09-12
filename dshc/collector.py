@@ -290,12 +290,40 @@ class MarketCollector:
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.live_dir / "watchlist.json")
 
-        # ---- 榜单/打分快照落库 (5 分钟桶, 用于名次稳定性与「打分 vs 真实收益」归因) ----
+        # ---- 榜单/打分快照落库 (5 分钟桶) ----
+        # ⚠️ 关键: rank 必须是「**全市场** 24h 涨幅名次」, 而不是候选池内的序号。
+        # 早期实现误用候选池序号, 导致所有候选的「在榜稳定性」都变成 100%, 因子完全失效。
         try:
             ts5 = now - (now % 300_000)
-            rows = [(ts5, c.symbol, c.rank_gain, c.score, c.change_24h, c.funding_ann,
-                     c.oi_chg_1h, c.ls_ratio, c.taker_ratio, c.spread_bps,
-                     ",".join(c.tags)) for c in cands]
+            # 全市场涨幅榜(含流动性过滤), 用于真实名次
+            # ⚠️ 必须用「分钟粒度」的 now 查 ticker_snap —— ts5 是 5 分钟桶, ticker_snap 里没有
+            # 这个时间戳(每行只在整分钟写入)。早期写成 ts5 导致所有候选名次都退化成 9999。
+            univ = list(self.connect().execute(
+                "SELECT symbol, price_change_pct q, quote_vol v FROM ticker_snap WHERE ts_ms=?",
+                (now,)))
+            if not univ:                       # 兜底: 取最新一分钟
+                mx = self.connect().execute("SELECT MAX(ts_ms) FROM ticker_snap").fetchone()[0]
+                univ = list(self.connect().execute(
+                    "SELECT symbol, price_change_pct q, quote_vol v FROM ticker_snap "
+                    "WHERE ts_ms=?", (mx,)))
+            ranked = sorted((r for r in univ if (r["v"] or 0) >= self.s.min_quote_vol_usdt),
+                            key=lambda r: r["q"] or -999.0, reverse=True)
+            rank_map = {r["symbol"]: i + 1 for i, r in enumerate(ranked)}
+
+            rows = []
+            for c in cands:
+                rows.append((ts5, c.symbol, rank_map.get(c.symbol, 9999), c.score, c.change_24h,
+                             c.funding_ann, c.oi_chg_1h, c.ls_ratio, c.taker_ratio, c.spread_bps,
+                             ",".join(c.tags)))
+            # 额外记录全市场涨幅榜 TOP50(即使不在候选池), 供名次稳定性分析
+            have = {c.symbol for c in cands}
+            by_sym = {r["symbol"]: r for r in univ}
+            for sym, rk in list(rank_map.items())[:50]:
+                if sym in have:
+                    continue
+                r = by_sym.get(sym)
+                rows.append((ts5, sym, rk, 0.0, (r["q"] if r else 0.0) or 0.0, 0.0, 0.0,
+                             0.0, 1.0, 0.0, "UNIV"))
             if rows:
                 with self._lock:
                     upsert_many(self.connect(), "rank_snap",

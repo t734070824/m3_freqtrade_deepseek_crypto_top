@@ -55,6 +55,7 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "basis": 5.0,       # 基差/年化
     "liq": 5.0,         # 流动性/价差
     "fng": 3.0,         # 宏观恐贪
+    "stick": 18.0,      # 榜单稳定性: 长期霸榜 = 真趋势; 脉冲票 = 追进去就被埋
 }
 
 # funding 年化阈值: 超过该值认为多头持仓成本过高
@@ -84,6 +85,7 @@ class Candidate:
     spread_bps: float = 0.0
     vol_ratio: float = 0.0          # 24h成交额 / 7日均值(需历史, 可缺省)
     score: float = 0.0
+    stability: float = 0.0
     rank_gain: int = 0
     tags: list[str] = field(default_factory=list)
     details: dict[str, float] = field(default_factory=dict)
@@ -99,6 +101,7 @@ class Candidate:
             "global_ls": self.global_ls, "taker_ratio": self.taker_ratio,
             "basis_rate": self.basis_rate, "spread_bps": self.spread_bps,
             "score": self.score, "rank_gain": self.rank_gain, "tags": self.tags,
+            "stability": self.stability,
         }
 
 
@@ -288,15 +291,85 @@ def score_candidate(cand: Candidate, w: dict[str, float] | None = None,
     return round(max(-100.0, min(100.0, total)), 4), {k: round(v, 4) for k, v in parts.items()}
 
 
+def rank_stability(conn: sqlite3.Connection, *, lookback_hours: float = 6.0,
+                   top_n: int = 15) -> dict[str, dict[str, float]]:
+    """统计每个合约在**涨幅榜 TOP N** 内的「稳定性」特征.
+
+    动机(2026-09-12 实测): 涨幅榜标的可以清晰分成两类 ——
+      * 持续趋势票: 长期霸榜(如 LAB/龙虾/RAYSOL: 平均名次 2~6, 连续在榜 180~240 分钟)
+      * 脉冲票    : 上榜次数多但每次只有几分钟, 追进去就被埋
+    因此把「在榜时长 / 名次」做成因子, 而不是只看瞬时涨幅。
+
+    返回 {symbol: {"in_top_min": 累计在榜分钟, "max_run_min": 最长连续分钟,
+                    "mean_rank": 平均名次, "pct_in_top": 在榜时间占比, "n": 样本数}}
+    """
+    from .timeutil import utc_ms
+    since = utc_ms() - int(lookback_hours * 3600_000)
+    rows = list(conn.execute(
+        "SELECT ts_ms, symbol, rank FROM rank_snap WHERE ts_ms >= ? ORDER BY symbol, ts_ms",
+        (since,)))
+    if not rows:
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    per: dict[str, list[tuple[int, int]]] = {}
+    for r in rows:
+        per.setdefault(r["symbol"], []).append((int(r["ts_ms"]), int(r["rank"] or 9999)))
+    # 采样步长(通常 5 分钟)
+    step_ms = 300_000
+    all_ts = sorted({int(r["ts_ms"]) for r in rows})
+    if len(all_ts) > 2:
+        ts_sorted = all_ts
+        diffs = sorted(b - a for a, b in zip(ts_sorted, ts_sorted[1:]) if b > a)
+        if diffs:
+            step_ms = diffs[len(diffs) // 2]
+    n_slots = max(len(all_ts), 1)
+    for sym, v in per.items():
+        v.sort()
+        in_top = [(t, rk) for t, rk in v if rk <= top_n]
+        if not in_top:
+            continue
+        runs, cur = [], 1
+        ts_in_top = [t for t, _ in in_top]
+        for a, b in zip(ts_in_top, ts_in_top[1:]):
+            if b - a <= step_ms * 1.5:
+                cur += 1
+            else:
+                runs.append(cur); cur = 1
+        runs.append(cur)
+        out[sym] = {
+            "in_top_min": len(in_top) * step_ms / 60_000.0,
+            "max_run_min": max(runs) * step_ms / 60_000.0,
+            "mean_rank": _mean([float(rk) for _, rk in in_top]),
+            "pct_in_top": len(in_top) / n_slots * 100.0,
+            "n": float(len(in_top)),
+        }
+    return out
+
+
+def _mean(xs: list[float]) -> float:
+    return sum(xs) / len(xs) if xs else float("nan")
+
+
+def _stickiness(st: dict[str, float] | None) -> float:
+    """把稳定性特征压成 [-1, 1] 的因子: 越长、名次越靠前 -> 越大."""
+    if not st:
+        return 0.0
+    run = min(st.get("max_run_min", 0.0) / 180.0, 1.0)      # 连续在榜 3 小时为满
+    cover = min(st.get("pct_in_top", 0.0) / 60.0, 1.0)      # 6 小时内 60% 时间在榜为满
+    rank = 1.0 - min(max((st.get("mean_rank", 15.0) - 1.0) / 14.0, 0.0), 1.0)
+    return max(-1.0, min(1.0, 0.45 * run + 0.30 * cover + 0.25 * rank))
+
+
 def build_candidates(conn: sqlite3.Connection, *, top_n: int = 40,
                      min_quote_vol: float = 30_000_000.0,
                      weights: dict[str, float] | None = None,
-                     ts_ms: int | None = None) -> list[Candidate]:
+                     ts_ms: int | None = None, use_stability: bool = True) -> list[Candidate]:
     """生成按 |score| 排序的候选池."""
     from .timeutil import utc_ms
     ts = ts_ms or utc_ms()
     feats = load_features(conn, ts)
     macro = latest_macro(conn)
+    stab = rank_stability(conn) if use_stability else {}
 
     # 24h 涨幅榜排名(仅在通过流动性门槛的合约内排名)
     ranked = sorted(
@@ -339,6 +412,16 @@ def build_candidates(conn: sqlite3.Connection, *, top_n: int = 40,
             rank_gain=rank_map.get(sym, 9999),
         )
         s, parts = score_candidate(c, weights, macro)
+        # 稳定性因子: 只在「有真实霸榜历史」时加分(避免冷启动噪声)
+        st = stab.get(sym)
+        if st and st.get("n", 0) >= 6:
+            stick = _stickiness(st)
+            w = (weights or DEFAULT_WEIGHTS).get("stick", DEFAULT_WEIGHTS["stick"])
+            parts["stick"] = round(w * stick, 4)
+            s = max(-100.0, min(100.0, s + parts["stick"]))
+            c.stability = stick
+        else:
+            parts["stick"] = 0.0
         c.score = s
         c.details = parts
         c.tags = _tags(c)
@@ -352,6 +435,10 @@ def _tags(c: Candidate) -> list[str]:
     t: list[str] = []
     if c.rank_gain <= 10:
         t.append("TOP10")
+    if c.stability >= 0.6:
+        t.append("STICKY")      # 长期霸榜 -> 可持有
+    elif c.stability > 0 and c.stability <= 0.2:
+        t.append("BURST")       # 脉冲型 -> 容易追高被埋
     if c.funding_ann > FUNDING_ANN_HIGH:
         t.append("FUND_HIGH")
     elif c.funding_ann < -0.10:

@@ -1,26 +1,27 @@
-# M3-DSH 数据采集器 / 看板 镜像 (python 标准库为主, 体积小、启动快)
+# M3-DSH 数据采集器 / 看板 镜像
+#
+# 说明: 这里刻意**不执行 apt-get**。
+#   2026-09-12 起本机 docker build 内的 apt-get update 会以 exit 137 失败
+#   (网络/DNS 与内存双重原因), 而运行期并不需要额外系统包 ——
+#   时区通过 TZ 环境变量交给 Python 处理, 因此去掉 apt 层后构建稳定且快得多。
 FROM python:3.11-slim
 
 LABEL org.dsh.project="m3dsc" \
-      org.dsh.component="collector"
+      org.dsh.component="collector" \
+      org.dsh.description="M3-DSH DeepSeek Crypto Top - 行情采集器与看板"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     TZ=Asia/Shanghai \
-    DSHC_ROOT=/workspace
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        tzdata ca-certificates curl \
-    && ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
-    && echo "Asia/Shanghai" > /etc/timezone \
-    && rm -rf /var/lib/apt/lists/*
+    DSHC_ROOT=/workspace \
+    PYTHONPATH=/workspace
 
 COPY docker/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
 
 WORKDIR /workspace
+# 运行时代码通常由 compose 以只读卷挂载覆盖; 这里复制一份作为「无卷运行」与镜像自检的兜底
 COPY dshc/ /workspace/dshc/
 COPY scripts/ /workspace/scripts/
 
-ENV PYTHONPATH=/workspace
 CMD ["python", "-m", "dshc.collector"]
