@@ -51,7 +51,8 @@ BOTS = [
     ("B", "反弹 M3DipRevert", "m3dsc-freqtrade-dip", "DSHC_DIP_API_PORT", 18084),
     ("C", "Carry M3CarryLong", "m3dsc-freqtrade-carry", "DSHC_CARRY_API_PORT", 18085),
     ("D", "突破 M3VolBreakout", "m3dsc-freqtrade-vol", "DSHC_VOL_API_PORT", 18086),
-    ("E", "费率空 M3FundingShort", "m3dsc-freqtrade-fshort", "DSHC_FSHORT_API_PORT", 18087),
+    # E 已退役(容器删除); 其端口 18087 已移交 G。保留历史条目但指向不存在端口, 防止串号。
+    ("E", "费率空 M3FundingShort(已退役)", "m3dsc-freqtrade-fshort", "DSHC_FSHORT_API_PORT", 18999),
     ("G", "融合 M3CarryDipTurbo", "m3dsc-freqtrade-turbo", "DSHC_TURBO_API_PORT", 18087),
 ]
 

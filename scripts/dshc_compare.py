@@ -32,7 +32,9 @@ BOTS = [
     ("B 反弹 M3DipRevert", "DSHC_DIP_API_PORT", 18084, False),
     ("C Carry M3CarryLong", "DSHC_CARRY_API_PORT", 18085, False),
     ("D 突破 M3VolBreakout", "DSHC_VOL_API_PORT", 18086, True),
-    ("E 费率空 M3FundingShort", "DSHC_FSHORT_API_PORT", 18087, True),  # 已停用: 做空方向被否定
+    # E 已退役(容器删除), 其端口 18087 已移交 G。这里指向一个不存在的端口, 只保留历史一行,
+    # 避免出现「E 与 G 数字完全相同」的串号假象。
+    ("E 费率空 M3FundingShort", "DSHC_FSHORT_API_PORT", 18999, True),
     ("G 融合 M3CarryDipTurbo", "DSHC_TURBO_API_PORT", 18087, False),
 ]
 
