@@ -31,8 +31,9 @@ BOTS = [
     ("F 负费率+急跌 M3CarryDip", "DSHC_F_API_PORT", 18081, False),
     ("B 反弹 M3DipRevert", "DSHC_DIP_API_PORT", 18084, False),
     ("C Carry M3CarryLong", "DSHC_CARRY_API_PORT", 18085, False),
-    ("D 突破 M3VolBreakout", "DSHC_VOL_API_PORT", 18086, False),
-    ("E 费率空 M3FundingShort", "DSHC_FSHORT_API_PORT", 18087, False),
+    ("D 突破 M3VolBreakout", "DSHC_VOL_API_PORT", 18086, True),
+    ("E 费率空 M3FundingShort", "DSHC_FSHORT_API_PORT", 18087, True),  # 已停用: 做空方向被否定
+    ("G 融合 M3CarryDipTurbo", "DSHC_TURBO_API_PORT", 18087, False),
 ]
 
 
@@ -95,7 +96,7 @@ def main() -> int:
     e = env()
 
     print("=" * 96)
-    print("M3-DSH 多实验对比 (F 负费率+急跌 / B 反弹 / C Carry / D 突破 / E 费率空)")
+    print("M3-DSH 多实验对比 (F 负费率+急跌 / B 反弹 / C Carry / G B+F融合)")
     if A_HISTORY:
         print("  注: 实验 A 追涨已停用 — 69 笔判定负期望(期望 -1.143/笔, 盈亏比 0.30, 累计 -87.55)")
     print("=" * 96)

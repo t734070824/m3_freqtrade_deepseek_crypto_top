@@ -52,6 +52,7 @@ BOTS = [
     ("C", "Carry M3CarryLong", "m3dsc-freqtrade-carry", "DSHC_CARRY_API_PORT", 18085),
     ("D", "突破 M3VolBreakout", "m3dsc-freqtrade-vol", "DSHC_VOL_API_PORT", 18086),
     ("E", "费率空 M3FundingShort", "m3dsc-freqtrade-fshort", "DSHC_FSHORT_API_PORT", 18087),
+    ("G", "融合 M3CarryDipTurbo", "m3dsc-freqtrade-turbo", "DSHC_TURBO_API_PORT", 18087),
 ]
 
 

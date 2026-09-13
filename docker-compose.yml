@@ -209,9 +209,9 @@ services:
 
   # ------------------------------------------------------------------
   # 对照实验 E: 费率极值反转做空(收多头拥挤的费率 + 做多头的被迫平仓)
-  m3dsc-freqtrade-fshort:
+  m3dsc-freqtrade-turbo:
     image: m3dsc-freqtrade:0.1.0
-    container_name: m3dsc-freqtrade-fshort
+    container_name: m3dsc-freqtrade-turbo
     restart: unless-stopped
     user: "1000:1000"
     depends_on:
@@ -234,13 +234,13 @@ services:
       - ./data:/workspace/data
       - ./logs:/workspace/logs
     ports:
-      - "127.0.0.1:${DSHC_FSHORT_API_PORT:-18087}:8080"
+      - "127.0.0.1:${DSHC_TURBO_API_PORT:-18087}:8080"
     command: >
       trade
-      --config /freqtrade/m3dsc_config/config-fshort-dryrun.json
-      --strategy M3FundingShort
+      --config /freqtrade/m3dsc_config/config-turbo-dryrun.json
+      --strategy M3CarryDipTurbo
       --strategy-path /freqtrade/user_data/strategies
-      --logfile /workspace/logs/freqtrade-fshort.log
+      --logfile /workspace/logs/freqtrade-g.log
     logging:
       driver: json-file
       options: { max-size: "20m", max-file: "5" }
