@@ -36,9 +36,13 @@ freqtrade/user_data/plot/
 freqtrade/user_data/notebooks/
 freqtrade/user_data/*.sqlite*
 freqtrade/user_data/*.json
+# 归档的历史账本(重置前留档, 二进制运行时产物, 不入库)
+freqtrade/user_data/archive/
 freqtrade/user_data/__pycache__/
 
 # ---- misc ----
 .DS_Store
 tmp/
+# 守护进程 PID 文件(运行时状态, 不入库)
+.run/
 *.pem
