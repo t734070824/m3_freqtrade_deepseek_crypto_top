@@ -150,6 +150,84 @@ def test_realized_risk_pct() -> None:
     assert realized_risk_pct(100.0, 1000.0, 0.05, 3.0) == pytest.approx(0.015)
 
 
+# ------------------------------------------- 事故 ⑤ 名义敞口 / 事故 ⑥ 凑单放大仓位
+# 2026-09-14 根因: 单笔权益损失 = 止损距离(价格) x 杠杆, 与仓位反推公式无关。
+# 旧实现只按 risk_budget 反推仓位, 实际亏损中位数落在 risk_ceiling 上(2x 下 -5% 权益),
+# 而函数自报 1%。四项测试锁死「止损一发的权益代价」这件事。
+
+
+def test_i5_notional_cap_always_binds() -> None:
+    """不管止损距离多宽, 名义敞口都不得超过 notional_cap。"""
+    for dist in (0.015, 0.025, 0.05, 0.08):
+        for lev in LEVS:
+            plan = plan_position(500.0, 0.007, dist, leverage=lev, notional_cap=0.08)
+            if plan.ok:
+                assert plan.notional_pct <= 0.08 + 1e-9, (dist, lev, plan)
+
+
+def test_i6_stopout_equity_loss_is_bounded() -> None:
+    """止损一发的权益代价 = 名义敞口 x 距离, 必须在可接受范围内(< 1%)。"""
+    worst = 0.0
+    for dist in (0.015, 0.025, 0.05, 0.08):
+        for lev in LEVS:
+            plan = plan_position(500.0, 0.007, dist, leverage=lev, notional_cap=0.08)
+            if not plan.ok:
+                continue
+            stopout_equity = plan.notional_pct * dist
+            worst = max(worst, stopout_equity)
+            assert stopout_equity <= 0.08 * 0.08 + 1e-12
+    assert worst < 0.01, f"止损一发最坏权益代价 {worst:.4f} 应 < 1%"
+
+
+def test_i7_portfolio_scales_with_open_trades() -> None:
+    """同时持仓越多, 单笔名义敞口越小; 组合总敞口不超过 notional_cap。
+
+    参数取「兼容组合」: notional_cap=0.08, max_open_trades=5, min_ratio=0.01
+    (即 0.08/5 = 0.016 每笔, 高于 0.01 的单笔下限)。若把 min_ratio 设成 0.05,
+    则下限本身会让组合敞口 > cap —— 那种配置在物理上就无解, 由调用方负责避免。
+    """
+    eq, dist, lev, cap, slots = 500.0, 0.05, 2.0, 0.08, 5
+    prev = None
+    for open_n in range(0, slots + 1):
+        plan = plan_position(eq, 0.007, dist, leverage=lev, notional_cap=cap,
+                             open_trades=open_n, max_open_trades=slots, min_ratio=0.01)
+        assert plan.ok
+        if prev is not None:
+            assert plan.notional_pct <= prev + 1e-12, f"持仓 {open_n} 笔时敞口反而变大"
+        prev = plan.notional_pct
+        # 每笔敞口不超过「组合上限 / 最多同时持仓数」
+        assert plan.notional_pct <= cap / slots + 1e-12
+        # 组合总敞口 = 单笔 x 持仓数, 不超过 notional_cap
+        assert plan.notional_pct * (open_n + 1) <= cap + 1e-12
+
+
+def test_i9_wide_stop_forces_tighter_exposure() -> None:
+    """距离越宽, 允许的名义敞口必须越紧 —— 两者共同决定止损一发的代价。"""
+    eq, lev = 500.0, 2.0
+    prev_cap = None
+    for dist in (0.015, 0.025, 0.05, 0.08):
+        plan = plan_position(eq, 0.007, dist, leverage=lev, notional_cap=0.08,
+                             max_open_trades=3, min_ratio=0.01)
+        assert plan.ok, (dist, plan)
+        stopout = plan.notional_pct * dist
+        assert stopout <= 0.08 + 1e-12, (dist, stopout)
+        if prev_cap is not None:
+            assert plan.notional_pct <= prev_cap + 1e-12, f"距离变宽({dist})敞口反而变大"
+        prev_cap = plan.notional_pct
+
+
+def test_i8_min_stake_floor_never_inflates_risk() -> None:
+    """事故 ⑥: 旧实现遇到 stake < min_stake 时把仓位顶回 min_stake,
+    这会让敞口与权益风险**双双越界**。新实现只允许压低, 不允许抬高。"""
+    eq, dist, lev = 500.0, 0.05, 2.0
+    tight = plan_position(eq, 0.0001, dist, leverage=lev, notional_cap=0.02, min_ratio=0.04)
+    loose = plan_position(eq, 0.0001, dist, leverage=lev, notional_cap=0.08, min_ratio=0.04)
+    assert tight.stake <= loose.stake + 1e-12
+    assert tight.notional_pct <= 0.02 + 1e-12
+    if tight.ok:
+        assert tight.stake * lev / eq <= 0.02 + 1e-12
+
+
 # ---------------------------------------------------------------- 资金费率
 def test_funding_gate() -> None:
     assert funding_gate(0.0, max_long=0.45, max_short=-0.50) == (True, True)

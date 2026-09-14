@@ -96,9 +96,12 @@ class M3DipRevert(IStrategy):
     PROFIT_PROTECT = 0.55
     RISK_BUDGET = 0.007
     RISK_CEILING = 0.011
-    MIN_STAKE_RATIO = 0.04
+    MIN_STAKE_RATIO = 0.03   # 名义口径的单笔下限(交易所最小成交额); 必须 <= NOTIONAL_CAP/max_open_trades(修正1的兼容条件)
     MAX_STAKE_RATIO = 0.25
     TARGET_STAKE_RATIO = 0.18
+    # 2026-09-14 根因修正: 单笔权益损失 = 止损距离 x 杠杆。B 用 3x + 4.5% 距离 = 止损一发
+    # 就是 -13.5% 权益, 实测单位亏损中位 -10.62% 正好落在这里(而不是计划里的 1.1%)。
+    NOTIONAL_CAP = 0.30
     REENTRY_COOLDOWN_MIN = 30
 
     def bot_start(self, **kwargs: Any) -> None:
@@ -274,19 +277,26 @@ class M3DipRevert(IStrategy):
                                  price_stop_distance=stop_dist, leverage=leverage,
                                  min_ratio=self.MIN_STAKE_RATIO, max_ratio=self.MAX_STAKE_RATIO,
                                  risk_ceiling=self.RISK_CEILING, confidence_mult=conf,
-                                 ann_funding=ann)
+                                 ann_funding=ann, notional_cap=self.NOTIONAL_CAP,
+                                 open_trades=len(Trade.get_open_trades()),
+                                 max_open_trades=self.config.get("max_open_trades", 1))
             if not plan.ok:
                 log.warning("[DIP] %s 放弃: %s", pair, plan.reason)
                 return 0.0
             stake = min(plan.stake, max_stake * 0.9 if max_stake else plan.stake)
+            # 2026-09-14 修正: 原实现在 stake < min_stake 时把仓位顶回 min_stake, 这会
+            # **绕过 risk_ceiling 与名义敞口封顶** —— 典型的「为了能成交而放大仓位」。
             if min_stake and stake < min_stake:
-                stake = min(min_stake, max_stake * 0.9 if max_stake else min_stake)
+                log.info("[DIP] %s 跳过: 计算仓位 %.2f 低于交易所最小 %.2f, 不为凑单放大仓位",
+                         pair, stake, min_stake)
+                return 0.0
             self._diag[pair] = {"stop_dist": stop_dist, "leverage": float(leverage),
                                 "stake": float(stake), "design_risk": float(plan.risk_pct),
+                                "notional_pct": float(plan.notional_pct),
                                 "ann": ann}
-            log.info("[DIP] %s 仓位: 止损距离%.2f%% 杠杆%.1f -> 保证金%.2f (名义%.2f, "
-                     "设计风险%.2f%%) [%s]", pair, stop_dist * 100, leverage, stake,
-                     stake * leverage, plan.risk_pct * 100, plan.reason)
+            log.info("[DIP] %s 仓位: 止损距离%.2f%% 杠杆%.1f -> 保证金%.2f (名义%.2f=权益%.1f%%, "
+                     "止损一发风险%.2f%%) [%s]", pair, stop_dist * 100, leverage, stake,
+                     stake * leverage, plan.notional_pct * 100, plan.risk_pct * 100, plan.reason)
             return float(max(stake, 0.0))
         except Exception as exc:  # noqa: BLE001
             log.warning("[DIP] 仓位异常 %s: %s", pair, exc)

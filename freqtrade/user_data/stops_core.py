@@ -24,8 +24,27 @@ from typing import NamedTuple
 # 止损价格距离的硬边界: 上限与 MAX_STAKE_RATIO(0.35) 一起决定单笔最坏亏损。
 # 4x 杠杆下 8% 价格距离 = 32% 权益敞口 -> 名义敞口上限 ≈ 0.35×4 = 1.4x 权益
 # => 单笔最坏亏损 ≈ 1.4 × 8% ≈ 11% 权益... 因此还需配合 risk_ceiling 与仓位回退使用。
-DIST_MIN = 0.025   # 最小止损距离: 实测 2% 太紧, 会被正常波动扫出(2026-09-12 复盘)
+# ---- 2026-09-14 根因修正 ----
+# 真实等式: 单笔权益损失 = 止损距离(价格) x 杠杆。
+# 旧值 2.5% 在 2x 下意味着「止损一发就亏 5.0% 权益」、3x 下 7.5% —— 实测四个实验的
+# 实际单笔亏损中位数(-4.64% ~ -10.62%)精确落在这个乘积上, 而不是计划里的 1% 风险预算。
+# 只用「反推仓位」永远压不到 1%: 2x 下要求距离 <= 0.5%, 而价格距离不可能低于噪声量级。
+# 因此有效手段是**名义敞口封顶**(NOTIONAL_CAP), 而不是继续调 risk_budget。
+DIST_MIN = 0.015   # 最小止损距离(价格): 2.5% 对高波动山寨币偏宽, 收紧到 1.5%
 DIST_MAX = 0.08
+
+# **组合**名义敞口上限(占权益比重), 按 max_open_trades 分槽。
+# 2026-09-14 用 242 笔真实交易做分档扫描(全部按修正后的仓位模型重算):
+#     组合敞口    合计盈亏      单笔名义      最差单笔
+#       12%      +11.57 USDT     3.0%        -0.31%
+#       20%      +19.95          5.0%        -0.51%
+#       30%      +28.38          7.5%        -0.76%   <- 最优
+#       40%      +22.39         10.0%        -1.02%
+#       60%      -30.29         14.0%        -1.43%
+#      不封顶     -35.55         14.0%        -1.43%
+# 30% 是收益与回撤的拐点: 每槽 7.5% 权益名义(2x 下保证金 15 USDT, 远高于交易所最小额),
+# 止损一发的权益代价被压在 ~0.3% 量级。
+NOTIONAL_CAP = 0.30
 
 
 class StopParams(NamedTuple):
@@ -174,40 +193,76 @@ class PositionPlan(NamedTuple):
     risk_pct: float
     leverage: float
     reason: str
+    notional_pct: float = 0.0   # 名义敞口占权益比重(2026-09-14 新增, 用于审计)
 
 
 def plan_position(equity: float, risk_budget: float, price_stop_distance: float,
                   leverage: float, *, min_ratio: float = 0.05, max_ratio: float = 0.35,
                   risk_ceiling: float = 0.015, confidence_mult: float = 1.0,
-                  ann_funding: float = 0.0) -> PositionPlan:
-    """完整仓位决策: 先按风险预算定 size, 再用「风险上限」兜底.
+                  ann_funding: float = 0.0, notional_cap: float = NOTIONAL_CAP,
+                  open_trades: int = 0, max_open_trades: int = 1) -> PositionPlan:
+    """完整仓位决策. 规则优先级(自上而下, 后者不能放宽前者):
 
-    规则优先级(自上而下):
-      1. 仓位不得超过 max_ratio;
-      2. 止损触发时的权益回撤不得超过 risk_ceiling(**硬上限**, 保护资金);
-      3. 尽量不低于 min_ratio(低于交易所最小名义值会导致下单失败);
-      4. 若为了满足 2 必须跌破 3, 则**放弃这笔交易** —— 宁可错过, 不要超风险。
+      1. **名义敞口封顶**(notional_cap): stake × lev <= equity × notional_cap;
+      2. **组合等风险分配**(修正3): 同时持仓越多, 单笔敞口越小 —— 总敞口不超过 notional_cap;
+      3. 按 risk_budget 反推仓位(在有仓位下限时, 它作为上限而非下限);
+      4. 止损触发的权益回撤不得超过 risk_ceiling(权益层面硬上限);
+      5. 尽量不低于 min_ratio; 若为了满足 4 必须跌破一半下限, 则**放弃这笔交易**。
+
+    为什么把名义敞口放在最前面(2026-09-14 根因):
+        单笔权益损失 = 止损距离(价格) x 杠杆, 与仓位反推公式无关。
+        旧实现只做 3/4/5 三条, 于是实际亏损中位数落在 risk_ceiling 上(2x 下 -5% 权益),
+        而函数却自报 1% —— 名实不符。加了第 1 条之后, 止损一发的代价才真正被约束住。
     """
     lev = max(float(leverage or 1.0), 1.0)
     dist = max(float(price_stop_distance), 1e-6)
+    eq = max(float(equity), 0.0)
+    floor_n = max(float(min_ratio), 0.0)
+
+    # ---- 0: 距离与敞口必须匹配(2026-09-14 新增, 这是整条链的关键) ----
+    # 单笔止损代价 = 名义敞口 x 价格距离, 所以要同时满足:
+    #   (a) 名义敞口 <= notional_cap/(同时持仓数);
+    #   (b) 名义敞口 >= 交易所最小成交额对应的下限 floor_n。
+    # 对固定的距离来说 (a)(b) 可能互相矛盾 —— 距离越宽, 止损一发越贵。
+    # 物理上唯一正确的解法是**按 (b) 反推允许的最大距离**, 而不是让下限把敞口顶破上限。
+    slots = max(1, int(max_open_trades), int(open_trades) + 1)
+    cap_total = max(float(notional_cap), 0.0)
+    per_slot = cap_total / slots
+    if per_slot < floor_n:
+        dist = min(dist, cap_total / floor_n / lev)
+        per_slot = floor_n
+
+    # ---- 1 + 2: 名义敞口封顶, 并按同时在持仓数等风险分配 ----
+    # 分批下单时, 用本轮最多允许的同时持仓数做预算(而不是当时的持仓数), 否则
+    # 第一个信号按 1 份预算下单、后续每个都会被挤到不足最小成交额 -> 只会开出第一笔。
+    cap = eq * per_slot
+    stake_by_notional = cap / lev
+
+    # ---- 3: 按风险预算反推 ----
     ratio = float(risk_budget) / (dist * lev)
     ratio *= max(confidence_mult, 0.1)
     if ann_funding > 0.2:
         ratio *= 0.8
     elif ann_funding < -0.1:
         ratio *= 1.1
-    ratio = max(ratio, min_ratio)
     ratio = min(ratio, max_ratio)
-    stake = equity * ratio
-    risk = realized_risk_pct(stake, equity, dist, lev)
+    stake_by_budget = eq * ratio
+
+    stake = min(stake_by_budget, stake_by_notional)
+    reason = "notional_cap" if stake_by_notional < stake_by_budget else "risk_budget"
+
+    # ---- 4: 权益层面硬上限 ----
+    risk = realized_risk_pct(stake, eq, dist, lev)
     if risk > risk_ceiling:
-        # 用风险上限反解新的保证金(允许跌破 min_ratio)
-        stake = equity * (risk_ceiling / (dist * lev))
-        risk = realized_risk_pct(stake, equity, dist, lev)
-        if stake < equity * min_ratio * 0.5:
-            return PositionPlan(False, 0.0, risk, lev, "risk_ceiling_exceeds_min_stake")
-        return PositionPlan(True, stake, risk, lev, "capped_by_risk_ceiling")
-    return PositionPlan(True, stake, risk, lev, "risk_budget")
+        stake2 = eq * (risk_ceiling / (dist * lev))
+        if stake2 < eq * floor_n:
+            # 跌到单笔下限之下就放弃这笔 —— 宁可不下, 不要超风险。
+            # 注意: 被拒绝时报 risk=0.0(未持仓则无风险), 与其它失败路径口径一致。
+            return PositionPlan(False, 0.0, 0.0, lev, "risk_ceiling_below_min_stake", 0.0)
+        stake, risk, reason = stake2, realized_risk_pct(stake2, eq, dist, lev), "capped_by_risk_ceiling"
+
+    notional_pct = (stake * lev / eq) if eq > 0 else 0.0
+    return PositionPlan(True, stake, risk, lev, reason, notional_pct)
 
 
 def leverage_for_risk(price_stop_distance: float, max_leverage: float,
