@@ -171,9 +171,9 @@ services:
 
   # ------------------------------------------------------------------
   # 对照实验 D: 波动压缩后放量突破(买在爆发第一根)
-  m3dsc-freqtrade-vol:
+  m3dsc-freqtrade-htrend:
     image: m3dsc-freqtrade:0.1.0
-    container_name: m3dsc-freqtrade-vol
+    container_name: m3dsc-freqtrade-htrend
     restart: unless-stopped
     user: "1000:1000"
     depends_on:
@@ -196,13 +196,13 @@ services:
       - ./data:/workspace/data
       - ./logs:/workspace/logs
     ports:
-      - "127.0.0.1:${DSHC_VOL_API_PORT:-18086}:8080"
+      - "127.0.0.1:${DSHC_HTREND_API_PORT:-18086}:8080"
     command: >
       trade
-      --config /freqtrade/m3dsc_config/config-vol-dryrun.json
-      --strategy M3VolBreakout
+      --config /freqtrade/m3dsc_config/config-htrend-dryrun.json
+      --strategy M3DipTrend
       --strategy-path /freqtrade/user_data/strategies
-      --logfile /workspace/logs/freqtrade-vol.log
+      --logfile /workspace/logs/freqtrade-h.log
     logging:
       driver: json-file
       options: { max-size: "20m", max-file: "5" }

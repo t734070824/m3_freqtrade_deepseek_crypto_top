@@ -31,11 +31,13 @@ BOTS = [
     ("F 负费率+急跌 M3CarryDip", "DSHC_F_API_PORT", 18081, False),
     ("B 反弹 M3DipRevert", "DSHC_DIP_API_PORT", 18084, False),
     ("C Carry M3CarryLong", "DSHC_CARRY_API_PORT", 18085, False),
-    ("D 突破 M3VolBreakout", "DSHC_VOL_API_PORT", 18086, True),
+    # D 已退役(容器删除), 其端口 18086 已移交 H。指向不存在端口, 避免「D 与 H 数字相同」的串号假象。
+    ("D 突破 M3VolBreakout", "DSHC_VOL_API_PORT", 18998, True),
     # E 已退役(容器删除), 其端口 18087 已移交 G。这里指向一个不存在的端口, 只保留历史一行,
     # 避免出现「E 与 G 数字完全相同」的串号假象。
     ("E 费率空 M3FundingShort", "DSHC_FSHORT_API_PORT", 18999, True),
     ("G 融合 M3CarryDipTurbo", "DSHC_TURBO_API_PORT", 18087, False),
+    ("H 正费率 M3DipTrend", "DSHC_HTREND_API_PORT", 18086, False),
 ]
 
 
@@ -98,7 +100,7 @@ def main() -> int:
     e = env()
 
     print("=" * 96)
-    print("M3-DSH 多实验对比 (F 负费率+急跌 / B 反弹 / C Carry / G B+F融合)")
+    print("M3-DSH 多实验对比 (F 负费率+急跌 / B 反弹 / C Carry / G B+F融合 / H 正费率+急跌)")
     if A_HISTORY:
         print("  注: 实验 A 追涨已停用 — 69 笔判定负期望(期望 -1.143/笔, 盈亏比 0.30, 累计 -87.55)")
     print("=" * 96)

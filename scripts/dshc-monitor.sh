@@ -4,9 +4,10 @@
 #   F 负费率+急跌 m3dsc-freqtrade-f  M3CarryDip       负费率 Carry+急跌反弹 :18081
 #   B 反弹   m3dsc-freqtrade-dip     M3DipRevert      急跌反弹            :18084
 #   C Carry  m3dsc-freqtrade-carry   M3CarryLong      负费率长持          :18085
-#   D 突破   m3dsc-freqtrade-vol     M3VolBreakout    波动压缩放量突破     :18086
 #   G 融合   m3dsc-freqtrade-turbo  M3CarryDipTurbo  负费率+急跌 短持快收 :18087
-#           (E 费率空已停用: 34 小时数据显示做空方向不成立; 运行档位移交 G)
+#   H 正费率 m3dsc-freqtrade-htrend M3DipTrend       正费率+1h急跌 买回调 :18086
+#           (E 费率空已停用: 34 小时数据显示做空方向不成立; 档位移交 G)
+#           (D 突破已停用: 4 笔全亏 -12.32, 突破代理去极值 -0.266%; 档位移交 H)
 #
 # 用法: bash scripts/dshc-monitor.sh [间隔秒, 默认 300]
 source "$(dirname "${BASH_SOURCE[0]}")/dshc-env.sh"
@@ -17,7 +18,7 @@ AUTH="${DSHC_FT_API_USER:-m3dsc}:${DSHC_FT_API_PASS}"
 P_A="${DSHC_F_API_PORT:-18081}"
 P_B="${DSHC_DIP_API_PORT:-18084}"
 P_C="${DSHC_CARRY_API_PORT:-18085}"
-P_D="${DSHC_VOL_API_PORT:-18086}"
+P_H="${DSHC_HTREND_API_PORT:-18086}"
 P_G="${DSHC_TURBO_API_PORT:-18087}"
 
 snap() {   # $1=key $2=port
@@ -28,11 +29,11 @@ snap() {   # $1=key $2=port
 printf '\n===== 监控启动 %s =====\n' "$(dshc_now_cst)" >> "$LOG"
 while true; do
   TS="$(dshc_now_cst)"
-  snap A "$P_A"; snap B "$P_B"; snap C "$P_C"; snap D "$P_D"; snap G "$P_G"
+  snap A "$P_A"; snap B "$P_B"; snap C "$P_C"; snap G "$P_G"; snap H "$P_H"
 
   python3 - "$TS" /tmp/m3mon_A.p /tmp/m3mon_A.s /tmp/m3mon_B.p /tmp/m3mon_B.s \
-           /tmp/m3mon_C.p /tmp/m3mon_C.s /tmp/m3mon_D.p /tmp/m3mon_D.s \
-           /tmp/m3mon_G.p /tmp/m3mon_G.s \
+           /tmp/m3mon_C.p /tmp/m3mon_C.s /tmp/m3mon_G.p /tmp/m3mon_G.s \
+           /tmp/m3mon_H.p /tmp/m3mon_H.s \
            "$DSHC_DATA_DIR/live/collector_status.json" >> "$LOG" 2>&1 <<'PYEOF'
 import json, sys
 ts = sys.argv[1]
@@ -42,8 +43,8 @@ def load(p, d):
     except Exception:
         return d
 labels = [("F 负费率 ", sys.argv[2], sys.argv[3]), ("B 反弹 ", sys.argv[4], sys.argv[5]),
-          ("C Carry", sys.argv[6], sys.argv[7]), ("D 突破 ", sys.argv[8], sys.argv[9]),
-          ("G 融合  ", sys.argv[10], sys.argv[11])]
+          ("C Carry", sys.argv[6], sys.argv[7]), ("G 融合  ", sys.argv[8], sys.argv[9]),
+          ("H 正费率", sys.argv[10], sys.argv[11])]
 out = []
 for label, pfile, sfile in labels:
     p = load(pfile, {}); st = load(sfile, [])
@@ -65,7 +66,7 @@ except Exception:
 print("\n".join(out), flush=True)
 PYEOF
 
-  for c in freqtrade-f freqtrade-dip freqtrade-carry freqtrade-vol freqtrade-turbo; do
+  for c in freqtrade-f freqtrade-dip freqtrade-carry freqtrade-turbo freqtrade-htrend; do
     N429=$(docker logs --since "${INTERVAL}s" "${DSHC_PREFIX}-$c" 2>&1 | grep -c '429' || true)
     [[ "${N429:-0}" -gt 0 ]] && echo "      [告警] $c 429 x$N429" >> "$LOG"
   done

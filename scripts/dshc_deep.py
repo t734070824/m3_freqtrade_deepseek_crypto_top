@@ -32,6 +32,7 @@ EXPS = [
     ("F", "负费率+急跌 M3CarryDip", "m3dsc-f.sqlite"),
     ("B", "急跌反弹 M3DipRevert", "m3dsc-dip.sqlite"),
     ("C", "负费率长持 M3CarryLong", "m3dsc-carry.sqlite"),
+    ("H", "正费率+急跌 M3DipTrend", "m3dsc-h.sqlite"),
 ]
 
 
