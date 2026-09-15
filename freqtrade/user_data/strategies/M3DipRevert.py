@@ -84,6 +84,16 @@ class M3DipRevert(IStrategy):
     MAX_SPREAD_BPS = 15.0
     RSI5_FLOOR = 8.0           # 5m RSI 地板(低于此值通常是崩盘, 直接跳过)
     EXIT_PROFIT = 0.030        # 权益收益 +3% 即离场(约 1% 价格 @3x)
+    # ---- 2026-09-15 出场几何修正: 给止损距离设硬上限 ----
+    # 问题: ATR 算出的距离中位 4.87% 价格(= -14.6% 权益 @3x), 而止盈只 +3.0% 权益,
+    #       设计赔率 1:4.9 —— 要保本需 81% 胜率, 实测只有 62%, 结构上必亏。
+    # 依据: 对 116 笔真实交易用 freqtrade 记录的 min_rate/max_rate 做双边界检验
+    #       (悲观=碰止损即算亏损 / 乐观=按分钟路径判先后):
+    #         现状            悲观 -1.567%/笔  乐观 -0.977%/笔
+    #         上限1.5%+止盈3%  悲观 -1.088%/笔  乐观 -0.491%/笔
+    #       两个边界一致改善约 +0.5%/笔, 且止损一发的代价从 -14.6% 降到 -4.5% 权益。
+    #       注意: 这**不足以让 B 转正** —— 剩下的问题在入场信号, 不在出场。
+    MAX_STOP_DIST = 0.015      # 止损距离硬上限(价格口径); 不再让 ATR 把距离推到 3%~5%
     MAX_HOLD_MIN = 240         # 最长 4 小时: 反弹逻辑不成立就撤
 
     # ---- 风控(与主策略同口径) ----
@@ -250,7 +260,7 @@ class M3DipRevert(IStrategy):
                 atr_frac = max(float(df.iloc[-1].get("atr_pct", 3.0) or 3.0) / 100.0, 0.005)
         except Exception:  # noqa: BLE001
             pass
-        stop_dist = entry_stop_distance(atr_frac, self.STOP_ATR_MULT)
+        stop_dist = min(entry_stop_distance(atr_frac, self.STOP_ATR_MULT), self.MAX_STOP_DIST)
         safe = leverage_for_risk(stop_dist, max_leverage=max_leverage,
                                  base_leverage=min(self.leverage_value, self.max_leverage),
                                  target_ratio=self.TARGET_STAKE_RATIO)
@@ -266,7 +276,8 @@ class M3DipRevert(IStrategy):
             if row is None:
                 return proposed_stake
             atr_pct = float(row.get("atr_pct", 3.0) or 3.0)
-            stop_dist = entry_stop_distance(atr_pct / 100.0, self.STOP_ATR_MULT)
+            stop_dist = min(entry_stop_distance(atr_pct / 100.0, self.STOP_ATR_MULT),
+                            self.MAX_STOP_DIST)
             wallet = self.wallets.get_total_stake_amount() if self.wallets else 0.0
             if wallet <= 0:
                 return proposed_stake
@@ -312,7 +323,9 @@ class M3DipRevert(IStrategy):
             atr_frac = float(row.get("atr_pct", 3.0) or 3.0) / 100.0 if row is not None else 0.03
         except Exception:  # noqa: BLE001
             atr_frac = 0.03
-        p = StopParams(stop_atr_mult=self.STOP_ATR_MULT, trail_atr_mult=self.TRAIL_ATR_MULT,
+        # max_price_distance 一起封顶: 否则浮盈后跟踪距离又放开回 ATR×倍数
+        p = StopParams(max_price_distance=self.MAX_STOP_DIST,
+                       stop_atr_mult=self.STOP_ATR_MULT, trail_atr_mult=self.TRAIL_ATR_MULT,
                        trail_start_profit=self.TRAIL_START_PROFIT, hard_stop=self.HARD_STOP,
                        profit_protect=self.PROFIT_PROTECT)
         d, stage = stop_price_distance(current_profit, lev, atr_frac, p)
