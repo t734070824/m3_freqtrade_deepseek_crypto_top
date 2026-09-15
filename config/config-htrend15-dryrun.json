@@ -1,0 +1,149 @@
+{
+  "$schema": "https://schema.freqtrade.io/schema.json",
+  "_comment": "M3-DSH 实验 I: M3DipTrend15(正费率 + 15m 急跌)。接管实验 F(负费率+急跌)腾出的运行档位 —— F 已判失败(23 笔, 期望 -0.123, 盈亏比 1.00)。与 H 只差急跌窗口长度。",
+  "initial_state": "running",
+  "stake_currency": "USDT",
+  "stake_amount": "unlimited",
+  "tradable_balance_ratio": 0.9,
+  "amend_last_stake_amount": true,
+  "last_stake_amount_min_ratio": 0.2,
+  "dry_run": true,
+  "cancel_open_orders_on_exit": true,
+  "trading_mode": "futures",
+  "margin_mode": "isolated",
+  "liquidation_buffer": 0.1,
+  "timeframe": "5m",
+  "minimal_roi": {},
+  "stoploss": -0.2,
+  "use_custom_stoploss": true,
+  "force_entry_enable": false,
+  "entry_pricing": {
+    "price_side": "same",
+    "use_order_book": true,
+    "order_book_top": 1,
+    "price_last_balance": 0,
+    "check_depth_of_market": {
+      "enabled": false,
+      "bids_to_ask_delta": 0.8
+    }
+  },
+  "exit_pricing": {
+    "price_side": "other",
+    "use_order_book": true,
+    "order_book_top": 1,
+    "price_last_balance": 0
+  },
+  "order_types": {
+    "entry": "limit",
+    "exit": "limit",
+    "stoploss": "market",
+    "stoploss_on_exchange": false,
+    "stoploss_price_type": "mark",
+    "emergency_exit": "market",
+    "force_exit": "market",
+    "force_entry": "market"
+  },
+  "order_time_in_force": {
+    "entry": "GTC",
+    "exit": "GTC"
+  },
+  "unfilledtimeout": {
+    "entry": 3,
+    "exit": 5,
+    "unit": "minutes"
+  },
+  "exchange": {
+    "name": "binance",
+    "key": "",
+    "secret": "",
+    "ccxt_config": {
+      "options": {
+        "defaultType": "swap"
+      }
+    },
+    "ccxt_async_config": {
+      "options": {
+        "defaultType": "swap"
+      }
+    },
+    "pair_whitelist": [
+      "BTC/USDT:USDT",
+      "ETH/USDT:USDT",
+      "SOL/USDT:USDT"
+    ],
+    "pair_blacklist": [
+      "BUSD/USDT:USDT",
+      "USDC/USDT:USDT",
+      "TUSD/USDT:USDT",
+      "FDUSD/USDT:USDT",
+      "DAI/USDT:USDT",
+      "USDP/USDT:USDT",
+      "EUR/USDT:USDT",
+      "PAXG/USDT:USDT",
+      "USD1/USDT:USDT",
+      "XUSD/USDT:USDT",
+      "BFUSD/USDT:USDT"
+    ]
+  },
+  "pairlists": [
+    {
+      "_comment": "共用同一份候选池(带迟滞), 保证各实验标的集合一致",
+      "method": "RemotePairList",
+      "mode": "whitelist",
+      "processing_mode": "append",
+      "pairlist_url": "http://m3dsc-dashboard:8081/api/pairlist?n=30",
+      "number_assets": 60,
+      "refresh_period": 600,
+      "keep_pairlist_on_failure": true,
+      "read_timeout": 10
+    },
+    {
+      "method": "SpreadFilter",
+      "max_spread_ratio": 0.01,
+      "refresh_period": 300
+    },
+    {
+      "method": "AgeFilter",
+      "min_days_listed": 2,
+      "refresh_period": 3600
+    },
+    {
+      "method": "PriceFilter",
+      "low_price_ratio": 0.3,
+      "min_price": 0
+    }
+  ],
+  "telegram": {
+    "enabled": false,
+    "token": "",
+    "chat_id": ""
+  },
+  "api_server": {
+    "enabled": true,
+    "listen_ip_address": "0.0.0.0",
+    "listen_port": 8080,
+    "enable_openapi": true,
+    "jwt_secret_key": "m3dsc-exp-jwt-overridden-by-env",
+    "ws_token": "m3dsc-exp-ws-overridden",
+    "CORS_origins": [
+      "*"
+    ],
+    "username": "m3dsc",
+    "password": "override-by-env-FREQTRADE__API_SERVER__PASSWORD"
+  },
+  "internals": {
+    "process_throttle_secs": 15,
+    "heartbeat_interval": 60
+  },
+  "dataformat_ohlcv": "feather",
+  "dataformat_trades": "feather",
+  "bot_name": "m3dsc-i-dryrun",
+  "strategy": "M3DipTrend15",
+  "max_open_trades": 4,
+  "dry_run_wallet": 500,
+  "available_capital": 500,
+  "position_adjustment_enable": true,
+  "logfile": "/workspace/logs/freqtrade-i.log",
+  "db_url": "sqlite:////freqtrade/user_data/m3dsc-i.sqlite",
+  "_comment_pricing": "币安 USD-M 合约的 ticker 不提供价格, freqtrade 强制要求 use_order_book=true(否则启动即报 'Ticker pricing not available for Binance')。 因此限流治理改为降低决策频率: process_throttle_secs=15(原 5) 且各实验白名单更小。"
+}

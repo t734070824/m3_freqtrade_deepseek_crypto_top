@@ -28,16 +28,19 @@ ROOT = Path(__file__).resolve().parent.parent
 A_HISTORY = True    # 实验 A 的历史结论(已停用, 不参与裁决)
 
 BOTS = [
-    ("F 负费率+急跌 M3CarryDip", "DSHC_F_API_PORT", 18081, False),
+    # F 已判失败(23 笔, 期望 -0.123, 盈亏比 1.00), 端口 18081 已移交 I。
+    ("F 负费率+急跌 M3CarryDip", "DSHC_F_API_PORT", 18997, True),
     ("B 反弹 M3DipRevert", "DSHC_DIP_API_PORT", 18084, False),
-    ("C Carry M3CarryLong", "DSHC_CARRY_API_PORT", 18085, False),
+    # C 已停用(10 笔, 期望 -1.017, MAE 中位 -7.32% —— 五项里风险最差)。
+    ("C Carry M3CarryLong", "DSHC_CARRY_API_PORT", 18996, True),
     # D 已退役(容器删除), 其端口 18086 已移交 H。指向不存在端口, 避免「D 与 H 数字相同」的串号假象。
     ("D 突破 M3VolBreakout", "DSHC_VOL_API_PORT", 18998, True),
     # E 已退役(容器删除), 其端口 18087 已移交 G。这里指向一个不存在的端口, 只保留历史一行,
     # 避免出现「E 与 G 数字完全相同」的串号假象。
     ("E 费率空 M3FundingShort", "DSHC_FSHORT_API_PORT", 18999, True),
     ("G 融合 M3CarryDipTurbo", "DSHC_TURBO_API_PORT", 18087, False),
-    ("H 正费率 M3DipTrend", "DSHC_HTREND_API_PORT", 18086, False),
+    ("H 正费率+1h急跌 M3DipTrend", "DSHC_HTREND_API_PORT", 18086, False),
+    ("I 正费率+15m急跌 M3DipTrend15", "DSHC_HTREND15_API_PORT", 18081, False),
 ]
 
 
@@ -100,7 +103,7 @@ def main() -> int:
     e = env()
 
     print("=" * 96)
-    print("M3-DSH 多实验对比 (F 负费率+急跌 / B 反弹 / C Carry / G B+F融合 / H 正费率+急跌)")
+    print("M3-DSH 多实验对比 (G 负费率 / H 正费率+1h急跌 / I 正费率+15m急跌 / B 无费率)")
     if A_HISTORY:
         print("  注: 实验 A 追涨已停用 — 69 笔判定负期望(期望 -1.143/笔, 盈亏比 0.30, 累计 -87.55)")
     print("=" * 96)
@@ -132,8 +135,8 @@ def main() -> int:
     print("裁决(唯一判据: 期望值/笔 > 0 且 盈亏比 > 1; 样本 < 20 笔不下结论)")
     print("=" * 96)
     if paused:
-        print("  (已停用实验: %s —— 容器已 stop, 需要时用 "
-              "docker compose --env-file .env up -d m3dsc-freqtrade-dryrun 恢复)" % ", ".join(paused))
+        print("  (已停用实验: %s —— 容器已 stop。恢复前必须先确认其端口未被新实验接管,"
+              " 否则会出现串号)" % ", ".join(paused))
     ranking = sorted(results.items(), key=lambda kv: -kv[1][0]["expectancy"])
     for name, (s, _) in ranking:
         ok = s["expectancy"] > 0 and (s["avg_loss"] == 0 or abs(s["avg_win"] / s["avg_loss"]) > 1)

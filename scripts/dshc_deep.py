@@ -28,11 +28,10 @@ UD = ROOT / "freqtrade" / "user_data"
 CST = timezone(timedelta(hours=8))
 
 EXPS = [
-    ("G", "B+F融合 M3CarryDipTurbo", "m3dsc-g.sqlite"),
-    ("F", "负费率+急跌 M3CarryDip", "m3dsc-f.sqlite"),
-    ("B", "急跌反弹 M3DipRevert", "m3dsc-dip.sqlite"),
-    ("C", "负费率长持 M3CarryLong", "m3dsc-carry.sqlite"),
-    ("H", "正费率+急跌 M3DipTrend", "m3dsc-h.sqlite"),
+    ("H", "正费率+1h急跌 M3DipTrend", "m3dsc-h.sqlite"),
+    ("I", "正费率+15m急跌 M3DipTrend15", "m3dsc-i.sqlite"),
+    ("G", "负费率+急跌 M3CarryDipTurbo", "m3dsc-g.sqlite"),
+    ("B", "急跌反弹(无费率) M3DipRevert", "m3dsc-dip.sqlite"),
 ]
 
 

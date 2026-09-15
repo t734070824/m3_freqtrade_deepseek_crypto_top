@@ -249,9 +249,9 @@ services:
   # 实验 F: 负费率 Carry + 急跌反弹(接管实验 A 腾出的档位)
   #   注: 实验 A(m3dsc-freqtrade-dryrun) 已按归因结论停用 —— 69 笔样本判定负期望,
   #   配置与代码保留, 需要时 docker compose --env-file .env up -d m3dsc-freqtrade-dryrun 恢复。
-  m3dsc-freqtrade-f:
+  m3dsc-freqtrade-htrend15:
     image: m3dsc-freqtrade:0.1.0
-    container_name: m3dsc-freqtrade-f
+    container_name: m3dsc-freqtrade-htrend15
     restart: unless-stopped
     user: "1000:1000"
     depends_on:
@@ -274,13 +274,13 @@ services:
       - ./data:/workspace/data
       - ./logs:/workspace/logs
     ports:
-      - "127.0.0.1:${DSHC_F_API_PORT:-18081}:8080"
+      - "127.0.0.1:${DSHC_HTREND15_API_PORT:-18081}:8080"
     command: >
       trade
-      --config /freqtrade/m3dsc_config/config-f-dryrun.json
-      --strategy M3CarryDip
+      --config /freqtrade/m3dsc_config/config-htrend15-dryrun.json
+      --strategy M3DipTrend15
       --strategy-path /freqtrade/user_data/strategies
-      --logfile /workspace/logs/freqtrade-f.log
+      --logfile /workspace/logs/freqtrade-i.log
     logging:
       driver: json-file
       options: { max-size: "20m", max-file: "5" }
